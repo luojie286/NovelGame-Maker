@@ -18,6 +18,12 @@
 - 优先复用已有测试，覆盖可观察行为和实际回归风险。GPT 审查断言和覆盖范围，亲自运行关键用例并验证真实入口。交付可运行脚手架时验证构建、启动和测试入口。
 - 有可用环境时验证真实依赖。使用替身时记录实际覆盖范围和未验证事项。测试优先使用合成样例，避免在提交或日志中写入凭据及用户内容。
 
+### 媒体与打包探针
+
+在项目根目录执行 `pwsh -File tools/media_probe/build.ps1`。构建机使用 Windows x64、Python 3.13、安装了 `PySide6_Addons` 和 `PyInstaller` 的 `.venv`，并通过 PATH 提供含 libx264 和 libmp3lame 编码器的 FFmpeg。构建产物位于 `dist/MediaProbe/`，本次依赖版本及文件清单位于 `build/media_probe/`。
+
+将整个 `dist/MediaProbe/` 复制到验收机器的含中文和空格的可写目录，双击 `MediaProbe.exe`。循环 BGM 后播放 WAV，分别播放并退出两种片尾，检查损坏文件的提示，关闭后重新启动。媒体后端和播放事件记录在 exe 旁的 `probe.log`。干净离线环境和实际声画的要求见本地架构验收文档。
+
 ## Git
 
 - 文档相关提交仅纳入 `README.md`、`AGENTS.md` 和 `docs/architecture.md`。需求、边界、术语、数据契约、验收等其他项目文档仅在本地维护，不纳入提交，包括 `CONTEXT.md`、`docs/requirements.md`、`docs/data-contracts.md` 和 `docs/architecture-verification.md`。此范围约定适用于文档，代码及实现所需配置按实际任务范围提交。
