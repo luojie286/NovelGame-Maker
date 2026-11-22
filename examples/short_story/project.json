@@ -1,0 +1,352 @@
+{
+  "schema_version": 1,
+  "project_id": "8baaa00e-7938-51cb-a3da-66366d7e9a03",
+  "title": "晨光回声",
+  "start_node_id": "b2318c14-9f26-5cdb-87d6-3c5d461bba49",
+  "nodes": [
+    {
+      "id": "b2318c14-9f26-5cdb-87d6-3c5d461bba49",
+      "name": "旧车站",
+      "items": [
+        {
+          "id": "92ddb3a2-c147-5583-8f8d-29ae2cfb2760",
+          "type": "set_background",
+          "asset_id": "76f5cd30-d737-59f0-a68d-278dd4a1eaef"
+        },
+        {
+          "id": "10a4f313-b7d9-5512-a4b6-2fe309d57e4a",
+          "type": "play_bgm",
+          "asset_id": "ab3b3a9c-9295-5af5-84a2-6fe706b34062"
+        },
+        {
+          "id": "0ad67a47-fb6b-599a-a065-3b3fb329d41d",
+          "type": "play_sfx",
+          "asset_id": "c66a1889-56f0-55d7-85e1-38db7df1216e"
+        },
+        {
+          "id": "04936626-b252-59fc-a5d5-16b616452e3b",
+          "type": "show_sprite",
+          "asset_id": "9ffdea35-2615-50c7-8b5e-c902a6fcaa19",
+          "slot": "left"
+        },
+        {
+          "id": "4c4694e5-fc02-5e0c-8cd7-cb3b59075d54",
+          "type": "dialogue",
+          "character_id": "fe0451c5-e3d4-5d56-86c9-8e0846fd4cb9",
+          "text": "钟楼的灯灭了，整座城只剩下旧车站的一盏灯。"
+        },
+        {
+          "id": "0bd63775-b612-5800-b8c7-3fe7426ba2fd",
+          "type": "narration",
+          "text": "遥带着一封未寄出的信，走进夜色。"
+        }
+      ]
+    },
+    {
+      "id": "b635baa0-dd3c-52aa-89ba-42598bef4760",
+      "name": "去留",
+      "items": [
+        {
+          "id": "d4ecb1d1-a29c-5122-bf78-b3a49036fb64",
+          "type": "show_sprite",
+          "asset_id": "646f026a-d1fb-51a7-b48e-48fb53339d0a",
+          "slot": "right"
+        },
+        {
+          "id": "c80588bf-54eb-5d29-b3aa-8ec80a80f1b6",
+          "type": "dialogue",
+          "character_id": "8db130f9-84fd-5aed-b927-043f7676a6dc",
+          "text": "天亮之前，你愿意听我说完吗？"
+        }
+      ],
+      "choices": [
+        {
+          "id": "bcfb1660-472c-5b24-89c5-4125980a1284",
+          "text": "留下听她说"
+        },
+        {
+          "id": "f58fe843-fe38-595c-bf3d-1c525da5ca72",
+          "text": "转身离开"
+        }
+      ]
+    },
+    {
+      "id": "1279efcb-3e94-5f92-bf3e-700d4a752f73",
+      "name": "留下",
+      "items": [
+        {
+          "id": "d52c1daf-a185-5560-949e-d411e7fca1b5",
+          "type": "dialogue",
+          "character_id": "fe0451c5-e3d4-5d56-86c9-8e0846fd4cb9",
+          "text": "我会等到钟声再响。"
+        }
+      ]
+    },
+    {
+      "id": "9723ca1b-15aa-5c26-80a1-0fcb70ac72a0",
+      "name": "离开",
+      "items": [
+        {
+          "id": "e5276a84-fe08-5064-8660-897a82e5bcbc",
+          "type": "narration",
+          "text": "脚步声在空旷的站台上渐渐消失。"
+        }
+      ]
+    },
+    {
+      "id": "8c88f10f-c622-594c-85cd-a43331ff9b67",
+      "name": "钟声",
+      "items": [
+        {
+          "id": "efd37575-8912-5569-841d-1be115c0ca72",
+          "type": "narration",
+          "text": "第一缕晨光穿过玻璃，钟声终于再次响起。"
+        }
+      ]
+    },
+    {
+      "id": "dd811904-ff78-5c89-b805-dad239908c45",
+      "name": "晨光结局",
+      "items": [
+        {
+          "id": "d6c92a06-aae8-5b78-ad36-a874edf794b1",
+          "type": "dialogue",
+          "character_id": "8db130f9-84fd-5aed-b927-043f7676a6dc",
+          "text": "这封信，终于可以交给你。"
+        }
+      ],
+      "ending": {
+        "credits_video_asset_id": "adb2262b-3b9b-5ce5-bb77-faa50ee3e06a"
+      }
+    },
+    {
+      "id": "879256b9-8ff6-5120-b596-bbdc0099adc0",
+      "name": "告别结局",
+      "items": [
+        {
+          "id": "2a59ed06-0b13-5afa-86e9-830f99a4ff4f",
+          "type": "narration",
+          "text": "信留在了站台，等待下一次列车。"
+        }
+      ],
+      "ending": {
+        "credits_video_asset_id": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "9cbb37ff-9736-5e3d-ad20-c66f3492b202",
+      "from_node_id": "b2318c14-9f26-5cdb-87d6-3c5d461bba49",
+      "to_node_id": "b635baa0-dd3c-52aa-89ba-42598bef4760",
+      "condition": null,
+      "effects": []
+    },
+    {
+      "id": "a5db7759-37b6-5813-ab96-3366983d2cee",
+      "from_node_id": "b635baa0-dd3c-52aa-89ba-42598bef4760",
+      "to_node_id": "1279efcb-3e94-5f92-bf3e-700d4a752f73",
+      "condition": {
+        "kind": "choice",
+        "op": "eq",
+        "choice_id": "bcfb1660-472c-5b24-89c5-4125980a1284"
+      },
+      "effects": [
+        {
+          "variable_id": "e8ba6b16-7584-58f8-8610-ca1958f4b13f",
+          "op": "add",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "642d1b58-1d76-564d-b3e6-2b59a0f4aef0",
+      "from_node_id": "b635baa0-dd3c-52aa-89ba-42598bef4760",
+      "to_node_id": "9723ca1b-15aa-5c26-80a1-0fcb70ac72a0",
+      "condition": {
+        "kind": "choice",
+        "op": "eq",
+        "choice_id": "f58fe843-fe38-595c-bf3d-1c525da5ca72"
+      },
+      "effects": [
+        {
+          "variable_id": "e8ba6b16-7584-58f8-8610-ca1958f4b13f",
+          "op": "subtract",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "fdf32f08-7394-5055-8b46-55a8591899b9",
+      "from_node_id": "1279efcb-3e94-5f92-bf3e-700d4a752f73",
+      "to_node_id": "8c88f10f-c622-594c-85cd-a43331ff9b67",
+      "condition": null,
+      "effects": []
+    },
+    {
+      "id": "4046d052-a2ab-5906-933a-925345eaecbb",
+      "from_node_id": "9723ca1b-15aa-5c26-80a1-0fcb70ac72a0",
+      "to_node_id": "8c88f10f-c622-594c-85cd-a43331ff9b67",
+      "condition": null,
+      "effects": []
+    },
+    {
+      "id": "e43edaad-8de0-59bd-b92d-f8c65f63f783",
+      "from_node_id": "8c88f10f-c622-594c-85cd-a43331ff9b67",
+      "to_node_id": "dd811904-ff78-5c89-b805-dad239908c45",
+      "condition": {
+        "kind": "variable",
+        "variable_id": "e8ba6b16-7584-58f8-8610-ca1958f4b13f",
+        "op": "gt",
+        "value": 0
+      },
+      "effects": []
+    },
+    {
+      "id": "787786db-fd93-5ec6-90c5-3cd37c4b43e8",
+      "from_node_id": "8c88f10f-c622-594c-85cd-a43331ff9b67",
+      "to_node_id": "879256b9-8ff6-5120-b596-bbdc0099adc0",
+      "condition": {
+        "kind": "variable",
+        "variable_id": "e8ba6b16-7584-58f8-8610-ca1958f4b13f",
+        "op": "le",
+        "value": 0
+      },
+      "effects": []
+    }
+  ],
+  "variables": [
+    {
+      "id": "e8ba6b16-7584-58f8-8610-ca1958f4b13f",
+      "name": "信任",
+      "type": "int",
+      "initial_value": 0
+    }
+  ],
+  "assets": [
+    {
+      "id": "76f5cd30-d737-59f0-a68d-278dd4a1eaef",
+      "name": "车站夜景",
+      "kind": "image",
+      "path": "assets/76f5cd30-d737-59f0-a68d-278dd4a1eaef.png",
+      "sha256": "7cd061172e3b0b2fe54016e30f67381817d5303321f2357b6c835095527a1e61"
+    },
+    {
+      "id": "d8ea6a9c-a207-5f1d-b71d-f9ef23bceb1a",
+      "name": "林的设定图",
+      "kind": "image",
+      "path": "assets/d8ea6a9c-a207-5f1d-b71d-f9ef23bceb1a.png",
+      "sha256": "3b970174020b99dc259793efb9476cd9d7e0af82f65746aebd1cc9b570e21a41"
+    },
+    {
+      "id": "9ffdea35-2615-50c7-8b5e-c902a6fcaa19",
+      "name": "林的立绘",
+      "kind": "image",
+      "path": "assets/9ffdea35-2615-50c7-8b5e-c902a6fcaa19.png",
+      "sha256": "a49872d6cc7c5d6f68e18fd30abbfa163b82a6d36b85e6ec3f82356971f2d08c"
+    },
+    {
+      "id": "646f026a-d1fb-51a7-b48e-48fb53339d0a",
+      "name": "遥的立绘",
+      "kind": "image",
+      "path": "assets/646f026a-d1fb-51a7-b48e-48fb53339d0a.png",
+      "sha256": "e095b126fccc644eea70e9107f9b774d53476642b55b5b912f0d9df04d89f427"
+    },
+    {
+      "id": "207d0624-f331-5cf5-9ef7-f8ccbb779541",
+      "name": "对白框",
+      "kind": "image",
+      "path": "assets/207d0624-f331-5cf5-9ef7-f8ccbb779541.png",
+      "sha256": "6402b655762b8b91925f31f02d1a4de728465aeb81f72efb7ca49266fe9193ac"
+    },
+    {
+      "id": "eb484031-767d-59c7-a112-100073b3111a",
+      "name": "选项按钮",
+      "kind": "image",
+      "path": "assets/eb484031-767d-59c7-a112-100073b3111a.png",
+      "sha256": "6343eac82512baf286fef511b9412f89d8d31845377de9577b88f699b686b0a1"
+    },
+    {
+      "id": "10c94373-cf9f-59c6-907c-098c1844aef4",
+      "name": "菜单按钮",
+      "kind": "image",
+      "path": "assets/10c94373-cf9f-59c6-907c-098c1844aef4.png",
+      "sha256": "624cbae54ef63736306bbe7844ebe1f1116fdd0de15b4f502eb919e1611146d1"
+    },
+    {
+      "id": "ab3b3a9c-9295-5af5-84a2-6fe706b34062",
+      "name": "夜行音乐",
+      "kind": "bgm",
+      "path": "assets/ab3b3a9c-9295-5af5-84a2-6fe706b34062.mp3",
+      "sha256": "13cda847fab19a3f1f5a7bbf550f2cc5247e70e1017d2e2de9cb34873bd59245"
+    },
+    {
+      "id": "c66a1889-56f0-55d7-85e1-38db7df1216e",
+      "name": "钟声",
+      "kind": "sfx",
+      "path": "assets/c66a1889-56f0-55d7-85e1-38db7df1216e.wav",
+      "sha256": "d7f39575c2b68488fe1ca0db91fee8862f6f22131c32bcd95459fa88aef9374a"
+    },
+    {
+      "id": "adb2262b-3b9b-5ce5-bb77-faa50ee3e06a",
+      "name": "片尾报幕",
+      "kind": "video",
+      "path": "assets/adb2262b-3b9b-5ce5-bb77-faa50ee3e06a.mp4",
+      "sha256": "4053963824e9dcf0835abb4cf3cdb6f5791ffc27ebe81e128176b109411fe86b"
+    }
+  ],
+  "characters": [
+    {
+      "id": "fe0451c5-e3d4-5d56-86c9-8e0846fd4cb9",
+      "name": "林",
+      "description": "守候旧车站的修表匠",
+      "reference_art_id": "d8ea6a9c-a207-5f1d-b71d-f9ef23bceb1a"
+    },
+    {
+      "id": "8db130f9-84fd-5aed-b927-043f7676a6dc",
+      "name": "遥",
+      "description": "带着未寄出的信归来",
+      "reference_art_id": null
+    }
+  ],
+  "relationships": [
+    {
+      "id": "81958ffd-4b1c-5829-a984-93155590d24a",
+      "from_character_id": "fe0451c5-e3d4-5d56-86c9-8e0846fd4cb9",
+      "to_character_id": "8db130f9-84fd-5aed-b927-043f7676a6dc",
+      "directed": false,
+      "label": "旧友"
+    }
+  ],
+  "documents": [
+    {
+      "id": "7667f84a-0a78-5723-b49b-ceb763cd6cb4",
+      "kind": "setting",
+      "title": "旧车站",
+      "text": "停运的车站只有钟楼和一盏灯。每到清晨，钟声仍会响起。",
+      "source_asset_id": null
+    }
+  ],
+  "excerpts": [
+    {
+      "id": "f47cc12e-51bf-5982-ab00-46d8a5657c74",
+      "node_id": "b2318c14-9f26-5cdb-87d6-3c5d461bba49",
+      "item_ids": [
+        "4c4694e5-fc02-5e0c-8cd7-cb3b59075d54"
+      ]
+    }
+  ],
+  "theme": {
+    "version": 1,
+    "layout_id": "classic",
+    "dialogue": {
+      "image_asset_id": "207d0624-f331-5cf5-9ef7-f8ccbb779541"
+    },
+    "choice": {
+      "image_asset_id": "eb484031-767d-59c7-a112-100073b3111a"
+    },
+    "menu": {
+      "image_asset_id": "10c94373-cf9f-59c6-907c-098c1844aef4"
+    }
+  }
+}

@@ -1,0 +1,82 @@
+[
+  {
+    "file": "assets/76f5cd30-d737-59f0-a68d-278dd4a1eaef.png",
+    "name": "车站夜景",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/d8ea6a9c-a207-5f1d-b71d-f9ef23bceb1a.png",
+    "name": "林的设定图",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/9ffdea35-2615-50c7-8b5e-c902a6fcaa19.png",
+    "name": "林的立绘",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/646f026a-d1fb-51a7-b48e-48fb53339d0a.png",
+    "name": "遥的立绘",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/207d0624-f331-5cf5-9ef7-f8ccbb779541.png",
+    "name": "对白框",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/eb484031-767d-59c7-a112-100073b3111a.png",
+    "name": "选项按钮",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/10c94373-cf9f-59c6-907c-098c1844aef4.png",
+    "name": "菜单按钮",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/ab3b3a9c-9295-5af5-84a2-6fe706b34062.mp3",
+    "name": "夜行音乐",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/c66a1889-56f0-55d7-85e1-38db7df1216e.wav",
+    "name": "钟声",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  },
+  {
+    "file": "assets/adb2262b-3b9b-5ce5-bb77-faa50ee3e06a.mp4",
+    "name": "片尾报幕",
+    "author": "GalGame Maker project",
+    "source": "tools/create_example.py",
+    "license": "original project-generated synthetic asset",
+    "attribution": "none"
+  }
+]
