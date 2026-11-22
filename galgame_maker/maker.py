@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from .condition_parser import parse_condition
 from .editing import ProjectEditor
 from .export import export_game
+from .maker_assets import AssetPanel
 from .player import PlayerWindow
 from .project import create_project, load_project, save_project
 from .runtime_data import compile_game
@@ -66,6 +67,8 @@ class MakerWindow(QMainWindow):
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
         tabs.addTab(self._make_story_tab(), "剧情")
+        self.asset_panel = AssetPanel(self)
+        tabs.addTab(self.asset_panel, "素材")
         self.tabs = tabs
         self.update_title()
 
@@ -201,6 +204,7 @@ class MakerWindow(QMainWindow):
         self.dirty = False
         self.update_title()
         self.refresh_story()
+        self.asset_panel.refresh()
 
     def save(self) -> bool:
         if not self.require_project():
