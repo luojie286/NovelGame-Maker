@@ -9,7 +9,7 @@
 - 使用清晰、常见、易于维护的代码写法。复杂模块应补充足够的注释，解释关键约束和取舍。确需使用难懂的语法时，简要说明原因。
 - 根据事实、证据和逻辑独立判断。有充分理由时，明确说明不同意见和理由。专业术语应准确，通俗解释须保留原义，使用类比时说明其适用范围。
 - 与用户对话时，每段自然语言以「喵」结尾。代码块、命令、文件内容、引用原文、链接地址和其他必须保留原样的内容除外。用户意图无法判断时，先澄清，再执行相关操作。
-- GPT 负责需求澄清、架构、任务划分、复杂实现、审查和集成。把简单或可批量执行的子任务交给 Pi 的 MiMo V2.6 Flash。把难度较高且边界清晰的实现交给 Pi 的 MiMo V2.6 Pro，或在 API 非高峰期交给 DeepSeek Flash。有明确分工或模型约定时沿用约定。委派时明确改动范围、交付物和验收条件。
+- GPT 负责需求澄清、架构、任务划分、复杂实现、审查和集成。把简单或可批量执行的子任务交给 Pi 的 MiMo V2.6 Flash。把难度较高且边界清晰的实现交给 Pi 的 DeepSeek Flash。当前项目暂不使用 MiMo V2.6 Pro。有明确分工或模型约定时沿用约定。委派时明确改动范围、交付物和验收条件。
 - Pi 调用失败时，先查 `pi --help` 和相关技能，核对参数、工作目录及工具权限，然后用最小操作验证实际结果。Pi 无法直接修改或验证时，先请它提供补丁或完整文件，由 GPT 审查后应用。GPT 接手时，说明接手的具体任务和已经尝试的办法。
 
 ## 测试与验证
@@ -23,6 +23,12 @@
 在项目根目录使用 Python 3.13 创建 `.venv`，执行 `.venv\Scripts\python.exe -m pip install -r requirements-build.txt`，再执行 `pwsh -File tools/media_probe/build.ps1`。构建机使用 Windows x64，并通过 PATH 提供含 libx264 和 libmp3lame 编码器的 FFmpeg。构建产物位于 `dist/MediaProbe/`，本次依赖版本及文件清单位于 `build/media_probe/`。
 
 将整个 `dist/MediaProbe/` 复制到验收机器的含中文和空格的可写目录，双击 `MediaProbe.exe`。循环 BGM 后播放 WAV，分别播放并退出两种片尾，检查损坏文件的提示，关闭后重新启动。媒体后端和播放事件记录在 exe 旁的 `probe.log`。干净离线环境和实际声画的要求见本地架构验收文档。
+
+### 应用入口
+
+从项目根目录使用 Python 3.13 创建虚拟环境后，执行 `.venv\Scripts\python.exe -m pip install -r requirements-maker.txt`。开发启动制作器用 `.venv\Scripts\python.exe -m galgame_maker.maker`，运行测试用 `.venv\Scripts\python.exe -m unittest discover -s tests`。构建独立播放器用 `pwsh -File tools/build_player.ps1`，构建内含预打包播放器的制作器用 `pwsh -File tools/build_maker.ps1`。生成的制作器入口为 `dist/GalGameMaker/GalGameMaker.exe`。导出游戏目录中的 `GalGamePlayer.exe` 是玩家入口。
+
+原创合成短篇保存在 `examples/short_story/`，其 `project.json` 可由制作器打开。资源来源见该目录的 `asset-sources.json`。构建和测试产物保存在被忽略的 `build/`、`dist/`。
 
 ## Git
 

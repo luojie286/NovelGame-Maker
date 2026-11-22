@@ -36,4 +36,18 @@ GalGame Maker 是面向不熟悉编程的独立开发者的视觉小说制作器
 
 ## 开发现状
 
-仓库目前包含产品需求、技术架构、首版数据契约、架构验收用例和协作规则。应用代码、依赖和构建、启动及测试入口将在实现阶段建立。协作约定见 [AGENTS.md](AGENTS.md)。
+仓库已包含纯 Python 剧情引擎、项目读写与素材复制、分支检查、可编辑的 PySide6 制作器、独立播放器、目录导出和原创合成短篇。制作器已能创建和编辑项目、预览并导出，首版各项交互与性能验收仍在继续。示例项目位于 `examples/short_story/`，媒体来源记录在其 `asset-sources.json`。协作约定与命令见 [AGENTS.md](AGENTS.md)。
+
+## 开发运行
+
+在 Windows x64 上使用 Python 3.13。
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-maker.txt
+.\.venv\Scripts\python.exe -m galgame_maker.maker
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+pwsh -File tools/build_maker.ps1
+```
+
+制作器目录包位于 `dist/GalGameMaker/`，其中预置独立播放器。制作器导出的游戏目录包含 `GalGamePlayer.exe`、`game.json` 和用到的 `assets/`。合成示例资源可用 `.\.venv\Scripts\python.exe -m tools.create_example` 生成，该命令要求目标示例目录尚不存在，并需要构建机上的 FFmpeg。
