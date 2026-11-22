@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .project import import_asset, resolve_asset_path
+from .project import import_asset, replace_asset, resolve_asset_path, verify_assets
 
 
 EXTENSION_KIND = {
@@ -60,7 +60,12 @@ class AssetPanel(QWidget):
         self.query.textChanged.connect(self.refresh)
         controls.addWidget(self.query, 1)
         for caption, action in (
-            ("导入", self.import_file), ("移除", self.remove_asset), ("播放", self.play),
+            ("导入", self.import_file),
+            ("替换", self.replace_file),
+            ("重命名", self.rename_asset),
+            ("移除", self.remove_asset),
+            ("播放", self.play),
+            ("校验完整性", self.verify_integrity),
         ):
             button = QPushButton(caption)
             button.clicked.connect(action)
@@ -146,6 +151,57 @@ class AssetPanel(QWidget):
             if row.data(Qt.ItemDataRole.UserRole) == record["id"]:
                 self.list.setCurrentItem(row)
                 break
+
+    def replace_file(self):
+        asset = self.selected_asset()
+        if asset is None:
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "替换素材文件")
+        if not filename:
+            return
+        source = Path(filename)
+        suggested = EXTENSION_KIND.get(source.suffix.lower())
+        if suggested is None:
+            QMessageBox.warning(self, "格式", "首版支持 PNG、JPEG、TXT、MP3、WAV、MP4")
+            return
+        if suggested != asset["kind"]:
+            QMessageBox.warning(
+                self, "类型不匹配",
+                f"当前素材类型为 {asset['kind']}，所选文件类型为 {suggested}",
+            )
+            return
+        try:
+            self.player.stop()
+            replace_asset(self.window.root, self.window.project, asset["id"], source)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "替换失败", str(error))
+            return
+        self.window.mark_dirty()
+        self.refresh()
+
+    def rename_asset(self):
+        asset = self.selected_asset()
+        if asset is None:
+            return
+        name, accepted = QInputDialog.getText(self, "重命名素材", "名称", text=asset["name"])
+        if not accepted or not name.strip():
+            return
+        asset["name"] = name.strip()
+        self.window.mark_dirty()
+        self.refresh()
+        self.window.character_panel.refresh()
+        self.window.theme_panel.load_part()
+
+    def verify_integrity(self):
+        if not self.window.require_project():
+            return
+        issues = verify_assets(self.window.root, self.window.project)
+        if not issues:
+            total = len(self.window.project["assets"])
+            QMessageBox.information(self, "完整性检查", f"全部 {total} 项素材校验通过")
+            return
+        lines = [f"{item['name']} ({item['path']}): {item['issue']}" for item in issues]
+        QMessageBox.warning(self, "发现异常素材", "\n".join(lines))
 
     def remove_asset(self):
         asset = self.selected_asset()

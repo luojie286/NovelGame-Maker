@@ -27,9 +27,14 @@ class CharacterPanel(QWidget):
         self.characters = QListWidget()
         self.characters.currentItemChanged.connect(self.selected_character_changed)
         left_layout.addWidget(self.characters)
+        char_actions = QHBoxLayout()
         add_button = QPushButton("新建角色")
         add_button.clicked.connect(self.add_character)
-        left_layout.addWidget(add_button)
+        char_actions.addWidget(add_button)
+        delete_button = QPushButton("删除角色")
+        delete_button.clicked.connect(self.delete_character)
+        char_actions.addWidget(delete_button)
+        left_layout.addLayout(char_actions)
         form = QFormLayout()
         self.name = QLineEdit()
         self.description = QTextEdit()
@@ -131,6 +136,26 @@ class CharacterPanel(QWidget):
             if row.data(Qt.ItemDataRole.UserRole) == character["id"]:
                 self.characters.setCurrentItem(row)
                 break
+
+    def delete_character(self):
+        character = self.selected_character()
+        if character is None:
+            return
+        char_id = character["id"]
+        references: list[str] = []
+        for node in self.window.project["nodes"]:
+            for item in node["items"]:
+                if item.get("character_id") == char_id:
+                    references.append(f"节点 {node['name']} 对白")
+        for relation in self.window.project.get("relationships", []):
+            if relation["from_character_id"] == char_id or relation["to_character_id"] == char_id:
+                references.append(f"人物关系 {relation['label']}")
+        if references:
+            QMessageBox.warning(self, "角色仍在使用", "\n".join(references))
+            return
+        self.window.project["characters"].remove(character)
+        self.window.mark_dirty()
+        self.refresh()
 
     def update_character(self):
         character = self.selected_character()

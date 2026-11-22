@@ -11,9 +11,11 @@ from galgame_maker.project import (
     create_project,
     import_asset,
     load_project,
+    replace_asset,
     resolve_asset_path,
     save_project,
     validate_project,
+    verify_assets,
 )
 
 
@@ -82,6 +84,33 @@ class ProjectTests(unittest.TestCase):
             self.skipTest(str(error))
         with self.assertRaises(ProjectFormatError):
             resolve_asset_path(self.root, "assets/link.png")
+
+    def test_replace_asset_preserves_id_and_verify_detects_tampering(self):
+        first = Path(self.temporary.name) / "v1.png"
+        first.write_bytes(b"image-v1")
+        record = import_asset(self.root, self.data, first, "image", "背景")
+        original_id = record["id"]
+        original_path = record["path"]
+
+        second = Path(self.temporary.name) / "v2.png"
+        second.write_bytes(b"image-v2-updated")
+        updated = replace_asset(self.root, self.data, original_id, second)
+        self.assertEqual(updated["id"], original_id)
+        self.assertNotEqual(updated["path"], original_path)
+        self.assertEqual(updated["sha256"], hashlib.sha256(b"image-v2-updated").hexdigest())
+        self.assertEqual(verify_assets(self.root, self.data), [])
+
+        # Tamper with file bytes -> verify_assets detects mismatch
+        resolve_asset_path(self.root, updated["path"]).write_bytes(b"corrupted")
+        issues = verify_assets(self.root, self.data)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["issue"], "mismatch")
+
+        # Delete file -> verify_assets detects missing
+        resolve_asset_path(self.root, updated["path"]).unlink()
+        issues = verify_assets(self.root, self.data)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["issue"], "missing")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .editing import EditError
-from .project import new_id
+from .project import new_id, resolve_asset_path
 
 
 class TextPanel(QWidget):
@@ -41,7 +41,10 @@ class TextPanel(QWidget):
         left_layout.addWidget(self.documents)
         document_buttons = QHBoxLayout()
         for caption, action in (
-            ("新建", self.add_document), ("保存正文", self.update_document),
+            ("新建", self.add_document),
+            ("从TXT导入", self.import_text_asset),
+            ("保存正文", self.update_document),
+            ("删除", self.delete_document),
         ):
             button = QPushButton(caption)
             button.clicked.connect(action)
@@ -159,6 +162,51 @@ class TextPanel(QWidget):
             if row.data(Qt.ItemDataRole.UserRole) == document["id"]:
                 self.documents.setCurrentItem(row)
                 break
+
+    def import_text_asset(self):
+        if not self.window.require_project():
+            return
+        assets = [asset for asset in self.window.project["assets"] if asset["kind"] == "text"]
+        if not assets:
+            QMessageBox.information(self, "导入文本", "请先在素材页导入 TXT 文本素材")
+            return
+        labels = [f"{asset['name']} [{asset['id'][:8]}]" for asset in assets]
+        selected, accepted = QInputDialog.getItem(
+            self, "选择文本素材", "素材", labels, editable=False,
+        )
+        if not accepted:
+            return
+        asset = assets[labels.index(selected)]
+        kind, accepted = QInputDialog.getItem(
+            self, "资料类型", "类型", ["script", "setting"], editable=False,
+        )
+        if not accepted:
+            return
+        try:
+            content = resolve_asset_path(self.window.root, asset["path"]).read_text(encoding="utf-8")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "读取失败", str(error))
+            return
+        document = {
+            "id": new_id(), "kind": kind, "title": asset["name"],
+            "text": content, "source_asset_id": asset["id"],
+        }
+        self.window.project.setdefault("documents", []).append(document)
+        self.window.mark_dirty()
+        self.refresh()
+        for index in range(self.documents.count()):
+            row = self.documents.item(index)
+            if row.data(Qt.ItemDataRole.UserRole) == document["id"]:
+                self.documents.setCurrentItem(row)
+                break
+
+    def delete_document(self):
+        document = self.selected_document()
+        if document is None:
+            return
+        self.window.project.get("documents", []).remove(document)
+        self.window.mark_dirty()
+        self.refresh()
 
     def update_document(self):
         document = self.selected_document()

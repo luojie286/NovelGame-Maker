@@ -10,13 +10,15 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QPointF, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QGraphicsItem, QGraphicsRectItem,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFileDialog, QFormLayout, QGraphicsItem, QGraphicsRectItem,
     QGraphicsScene, QGraphicsTextItem, QGraphicsView, QHBoxLayout,
-    QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMessageBox, QPushButton, QSpinBox, QSplitter,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
-from .branch_check import BranchCheckCache, NodeCheckState
+from .branch_check import BranchCheckCache, NodeCheckState, referenced_variable_ids
 from .condition_parser import format_condition, parse_condition
 from .editing import ProjectEditor
 from .export import export_game
@@ -164,6 +166,7 @@ class MakerWindow(QMainWindow):
             ("打开", self.open_project),
             ("保存", self.save),
             ("预览", self.preview),
+            ("调试预览", self.preview_debug),
             ("导出游戏", self.export),
         ):
             action = QAction(label, self)
@@ -183,9 +186,10 @@ class MakerWindow(QMainWindow):
             ("设为开场", self.set_start),
             ("设置结局", self.set_ending),
             ("片尾视频", self.set_credits_video),
-            ("新建变量", self.add_variable),
+            ("变量管理", self.manage_variables),
             ("检查分支", self.retry_branch_check),
             ("预览", self.preview),
+            ("调试预览", self.preview_debug),
         ):
             button = QPushButton(label)
             button.clicked.connect(handler)
@@ -752,6 +756,15 @@ class MakerWindow(QMainWindow):
         node = self.current_node()
         if node is None:
             return
+        if node.get("ending") is not None:
+            answer = QMessageBox.question(
+                self, "取消结局", f"取消「{node['name']}」的结局标记？",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                node["ending"] = None
+                self.mark_dirty()
+                self.refresh_story(node["id"])
+            return
         if any(edge["from_node_id"] == node["id"] for edge in self.project["edges"]):
             QMessageBox.warning(self, "无法设置结局", "结局节点不能有后继")
             return
@@ -779,6 +792,108 @@ class MakerWindow(QMainWindow):
                 None if selected == "不播放片尾" else assets[labels.index(selected)]["id"]
             )
             self.mark_dirty()
+
+    def manage_variables(self):
+        if not self.require_project():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("变量管理")
+        dialog.resize(460, 360)
+        layout = QVBoxLayout(dialog)
+        listing = QListWidget()
+        layout.addWidget(listing, 1)
+
+        def reload_list():
+            listing.clear()
+            for var in self.project["variables"]:
+                row = QListWidgetItem(
+                    f"{var['name']} ({var['type']}) = {var['initial_value']}"
+                )
+                row.setData(Qt.ItemDataRole.UserRole, var["id"])
+                listing.addItem(row)
+
+        def selected_var() -> dict | None:
+            row = listing.currentItem()
+            if row is None:
+                return None
+            vid = row.data(Qt.ItemDataRole.UserRole)
+            return next((v for v in self.project["variables"] if v["id"] == vid), None)
+
+        def on_add():
+            self.add_variable()
+            reload_list()
+
+        def on_edit():
+            var = selected_var()
+            if var is None:
+                return
+            name, accepted = QInputDialog.getText(dialog, "编辑变量", "名称", text=var["name"])
+            if not accepted or not name.strip():
+                return
+            cleaned = name.strip()
+            if not cleaned.isidentifier() or cleaned in {"choice", "true", "false"}:
+                QMessageBox.warning(dialog, "变量", "变量名须是可用于条件表达式的标识符")
+                return
+            if any(v["name"] == cleaned and v["id"] != var["id"] for v in self.project["variables"]):
+                QMessageBox.warning(dialog, "变量", "变量名称已存在")
+                return
+            if var["type"] == "int":
+                raw, accepted = QInputDialog.getText(
+                    dialog, "初始值", cleaned, text=str(var["initial_value"]),
+                )
+                if not accepted:
+                    return
+                try:
+                    value: int | bool = int(raw)
+                except ValueError:
+                    QMessageBox.warning(dialog, "初始值", "请输入整数")
+                    return
+            else:
+                selected, accepted = QInputDialog.getItem(
+                    dialog, "初始值", cleaned, ["false", "true"],
+                    1 if var["initial_value"] else 0, editable=False,
+                )
+                if not accepted:
+                    return
+                value = selected == "true"
+            var["name"] = cleaned
+            var["initial_value"] = value
+            self.mark_dirty()
+            if self.current_node() is not None:
+                self.refresh_edges(self.current_node())
+            reload_list()
+
+        def on_delete():
+            var = selected_var()
+            if var is None:
+                return
+            vid = var["id"]
+            refs: list[str] = []
+            node_names = {n["id"]: n["name"] for n in self.project["nodes"]}
+            for edge in self.project["edges"]:
+                source_name = node_names.get(edge["from_node_id"], edge["from_node_id"])
+                if vid in referenced_variable_ids(edge.get("condition")):
+                    refs.append(f"节点 {source_name} 连接条件")
+                if any(eff.get("variable_id") == vid for eff in edge.get("effects", [])):
+                    refs.append(f"节点 {source_name} 连接变量变化")
+            if refs:
+                QMessageBox.warning(dialog, "变量仍在使用", "\n".join(refs))
+                return
+            self.project["variables"].remove(var)
+            self.mark_dirty()
+            reload_list()
+
+        buttons = QHBoxLayout()
+        for caption, handler in (("新建", on_add), ("编辑", on_edit), ("删除", on_delete)):
+            btn = QPushButton(caption)
+            btn.clicked.connect(handler)
+            buttons.addWidget(btn)
+        layout.addLayout(buttons)
+        close_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_box.rejected.connect(dialog.accept)
+        layout.addWidget(close_box)
+        reload_list()
+        dialog.exec()
 
     def add_variable(self):
         if not self.require_project():
@@ -896,6 +1011,22 @@ class MakerWindow(QMainWindow):
             fields["asset_id"] = None if selected == "清除背景" else assets[
                 labels.index(selected) - (1 if kind == "set_background" else 0)
             ]["id"]
+            if kind == "play_bgm":
+                loop_choice, accepted = QInputDialog.getItem(
+                    self, "循环播放", "模式", ["循环", "单次"], editable=False,
+                )
+                if not accepted:
+                    return
+                volume, accepted = QInputDialog.getInt(self, "音量", "音量百分比", 100, 0, 100)
+                if not accepted:
+                    return
+                fields["loop"] = loop_choice == "循环"
+                fields["volume_pct"] = volume
+            elif kind == "play_sfx":
+                volume, accepted = QInputDialog.getInt(self, "音效音量", "音量百分比", 100, 0, 100)
+                if not accepted:
+                    return
+                fields["volume_pct"] = volume
         if kind in {"show_sprite", "hide_sprite"}:
             slot, accepted = QInputDialog.getItem(
                 self, "立绘槽位", "槽位", ["left", "center", "right"], editable=False,
@@ -934,6 +1065,19 @@ class MakerWindow(QMainWindow):
             )
             if not accepted or not text:
                 return
+            if kind == "dialogue" and self.project["characters"]:
+                characters = self.project["characters"]
+                labels = [character["name"] for character in characters]
+                current_idx = next(
+                    (i for i, c in enumerate(characters) if c["id"] == item.get("character_id")),
+                    0,
+                )
+                selected, accepted = QInputDialog.getItem(
+                    self, "发言角色", "角色", labels, current_idx, editable=False,
+                )
+                if not accepted:
+                    return
+                item["character_id"] = characters[labels.index(selected)]["id"]
             item["text"] = text
             self.text_panel.refresh()
         elif kind in {"set_background", "show_sprite", "play_bgm", "play_sfx"}:
@@ -945,8 +1089,14 @@ class MakerWindow(QMainWindow):
                 labels = ["清除背景", *labels]
             if not labels:
                 return
+            current_asset_idx = 0
+            if item.get("asset_id") is not None:
+                for idx, asset in enumerate(assets):
+                    if asset["id"] == item["asset_id"]:
+                        current_asset_idx = idx + (1 if kind == "set_background" else 0)
+                        break
             selected, accepted = QInputDialog.getItem(
-                self, "更换素材", "素材", labels, editable=False,
+                self, "更换素材", "素材", labels, current_asset_idx, editable=False,
             )
             if not accepted:
                 return
@@ -954,13 +1104,44 @@ class MakerWindow(QMainWindow):
                 labels.index(selected) - (1 if kind == "set_background" else 0)
             ]["id"]
             if kind == "show_sprite":
+                slots = ["left", "center", "right"]
+                slot_idx = slots.index(item["slot"]) if item.get("slot") in slots else 1
+                slot, accepted = QInputDialog.getItem(
+                    self, "立绘槽位", "槽位", slots, slot_idx, editable=False,
+                )
+                if not accepted:
+                    return
                 placement = item.get("placement") or {}
                 scale, accepted = QInputDialog.getInt(
                     self, "立绘缩放", "百分比", placement.get("scale_pct", 100), 25, 200,
                 )
                 if not accepted:
                     return
-                item.setdefault("placement", {})["scale_pct"] = scale
+                defaults = {"left": (480, 1), "center": (960, 2), "right": (1440, 3)}
+                x, z = defaults[slot]
+                item["slot"] = slot
+                item["placement"] = {"x": x, "y": 1040, "scale_pct": scale, "z": z}
+            elif kind == "play_bgm":
+                loop_choice, accepted = QInputDialog.getItem(
+                    self, "循环播放", "模式", ["循环", "单次"],
+                    0 if item.get("loop", True) else 1, editable=False,
+                )
+                if not accepted:
+                    return
+                volume, accepted = QInputDialog.getInt(
+                    self, "音量", "音量百分比", item.get("volume_pct", 100), 0, 100,
+                )
+                if not accepted:
+                    return
+                item["loop"] = loop_choice == "循环"
+                item["volume_pct"] = volume
+            elif kind == "play_sfx":
+                volume, accepted = QInputDialog.getInt(
+                    self, "音效音量", "音量百分比", item.get("volume_pct", 100), 0, 100,
+                )
+                if not accepted:
+                    return
+                item["volume_pct"] = volume
             item["asset_id"] = asset_id
         elif kind == "hide_sprite":
             selected, accepted = QInputDialog.getItem(
@@ -1008,6 +1189,62 @@ class MakerWindow(QMainWindow):
             QMessageBox.warning(self, "无法预览", str(error))
             return
         self.preview_window = PlayerWindow(game, self.root)
+        self.preview_window.show()
+
+    def preview_debug(self):
+        if not self.require_project():
+            return
+        if not self.project["nodes"]:
+            QMessageBox.information(self, "调试预览", "请先创建剧情节点")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("调试预览设置")
+        form = QFormLayout(dialog)
+        node_box = QComboBox()
+        current = self.current_node()
+        current_idx = 0
+        for index, node in enumerate(self.project["nodes"]):
+            node_box.addItem(node["name"], node["id"])
+            if current is not None and node["id"] == current["id"]:
+                current_idx = index
+        node_box.setCurrentIndex(current_idx)
+        form.addRow("起始节点", node_box)
+        var_widgets: dict[str, tuple[str, QWidget]] = {}
+        for var in self.project["variables"]:
+            if var["type"] == "int":
+                spin = QSpinBox()
+                spin.setRange(-1000000, 1000000)
+                spin.setValue(var["initial_value"])
+                form.addRow(f"变量 {var['name']}", spin)
+                var_widgets[var["id"]] = ("int", spin)
+            else:
+                box = QCheckBox("true")
+                box.setChecked(var["initial_value"])
+                form.addRow(f"变量 {var['name']}", box)
+                var_widgets[var["id"]] = ("bool", box)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        start_id = node_box.currentData()
+        test_vars: dict[str, int | bool] = {}
+        for vid, (kind, widget) in var_widgets.items():
+            test_vars[vid] = widget.value() if kind == "int" else widget.isChecked()
+        try:
+            game = compile_game(self.project, self.root, branch_cache=self.branch_cache)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "无法预览", str(error))
+            return
+        self.preview_window = PlayerWindow(
+            game, self.root,
+            start_node_id=start_id,
+            initial_variables=test_vars,
+            auto_start=True,
+        )
         self.preview_window.show()
 
     def export(self):
