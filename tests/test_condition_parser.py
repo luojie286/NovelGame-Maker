@@ -1,6 +1,8 @@
 import unittest
 
-from galgame_maker.condition_parser import ConditionSyntaxError, parse_condition
+from galgame_maker.condition_parser import (
+    ConditionSyntaxError, format_condition, parse_condition,
+)
 from galgame_maker.conditions import ConditionError, evaluate_condition
 
 
@@ -52,6 +54,16 @@ class ParserTests(unittest.TestCase):
             parse_condition("好感度 == true", VARIABLES, CHOICES)
         with self.assertRaises(ConditionError):
             parse_condition('choice == "A"', VARIABLES, [CHOICES[0], {"id": "other", "text": "A"}])
+
+    def test_format_uses_current_names_and_roundtrips(self):
+        tree = parse_condition(
+            '好感度 > 50 and (choice == "A" or choice == "B")',
+            VARIABLES, CHOICES,
+        )
+        renamed = [{**VARIABLES[0], "name": "信任值"}, VARIABLES[1]]
+        expression = format_condition(tree, renamed, CHOICES)
+        self.assertIn("信任值", expression)
+        self.assertEqual(parse_condition(expression, renamed, CHOICES), tree)
 
 
 if __name__ == "__main__":

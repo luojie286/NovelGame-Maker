@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from .condition_parser import parse_condition
+from .condition_parser import format_condition, parse_condition
 from .editing import ProjectEditor
 from .export import export_game
 from .maker_assets import AssetPanel
@@ -100,10 +100,13 @@ class MakerWindow(QMainWindow):
         toolbar = QHBoxLayout()
         for label, handler in (
             ("新建节点", self.add_node),
+            ("节点改名", self.rename_node),
             ("复制节点", self.copy_node),
+            ("删除节点", self.delete_node),
             ("连接节点", self.connect_nodes),
             ("设为开场", self.set_start),
             ("设置结局", self.set_ending),
+            ("片尾视频", self.set_credits_video),
             ("新建变量", self.add_variable),
             ("预览", self.preview),
         ):
@@ -141,6 +144,20 @@ class MakerWindow(QMainWindow):
             button.clicked.connect(handler)
             choices.addWidget(button)
         side_layout.addLayout(choices)
+        side_layout.addWidget(QLabel("后继连接"))
+        self.edges_list = QListWidget()
+        side_layout.addWidget(self.edges_list)
+        edge_actions = QHBoxLayout()
+        for label, handler in (
+            ("条件", self.edit_edge_condition),
+            ("添加变更", self.add_edge_effect),
+            ("移除变更", self.remove_edge_effect),
+            ("删除连接", self.delete_edge),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            edge_actions.addWidget(button)
+        side_layout.addLayout(edge_actions)
         split.addWidget(side)
         split.setSizes([850, 360])
         return container
@@ -291,6 +308,7 @@ class MakerWindow(QMainWindow):
         self.items_list.clear()
         node = self.current_node()
         if node is None:
+            self.edges_list.clear()
             return
         for item in node["items"]:
             label = item["type"]
@@ -305,6 +323,42 @@ class MakerWindow(QMainWindow):
             row = QListWidgetItem(f"选项 · {choice['text']}")
             row.setData(Qt.ItemDataRole.UserRole, choice["id"])
             self.items_list.addItem(row)
+        self.refresh_edges(node)
+
+    def refresh_edges(self, node: dict):
+        selected = self.current_edge()
+        selected_id = selected["id"] if selected else None
+        self.edges_list.clear()
+        names = {entry["id"]: entry["name"] for entry in self.project["nodes"]}
+        for edge in self.project["edges"]:
+            if edge["from_node_id"] != node["id"]:
+                continue
+            condition = edge["condition"]
+            try:
+                expression = (
+                    format_condition(condition, self.project["variables"], node.get("choices", []))
+                    if condition is not None else "自动衔接"
+                )
+            except (KeyError, TypeError, ValueError):
+                expression = "条件引用失效"
+            effect_count = len(edge.get("effects", []))
+            suffix = f" · {effect_count} 项变量变化" if effect_count else ""
+            row = QListWidgetItem(
+                f"{names.get(edge['to_node_id'], '缺失节点')} · {expression}{suffix}"
+            )
+            row.setData(Qt.ItemDataRole.UserRole, edge["id"])
+            self.edges_list.addItem(row)
+            if edge["id"] == selected_id:
+                self.edges_list.setCurrentItem(row)
+
+    def current_edge(self) -> dict | None:
+        row = self.edges_list.currentItem()
+        if row is None or self.project is None:
+            return None
+        edge_id = row.data(Qt.ItemDataRole.UserRole)
+        return next(
+            (edge for edge in self.project["edges"] if edge["id"] == edge_id), None,
+        )
 
     def add_node(self):
         if not self.require_project():
@@ -323,9 +377,46 @@ class MakerWindow(QMainWindow):
         self.mark_dirty()
         self.refresh_story(duplicate["id"])
 
+    def rename_node(self):
+        node = self.current_node()
+        if node is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self, "节点改名", "名称", text=node["name"],
+        )
+        if accepted and name.strip():
+            node["name"] = name.strip()
+            self.mark_dirty()
+            self.refresh_story(node["id"])
+
+    def delete_node(self):
+        node = self.current_node()
+        if node is None:
+            return
+        answer = QMessageBox.question(
+            self, "删除节点", f"删除「{node['name']}」及连接？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        node_id = node["id"]
+        self.project["nodes"].remove(node)
+        self.project["edges"] = [
+            edge for edge in self.project["edges"]
+            if edge["from_node_id"] != node_id and edge["to_node_id"] != node_id
+        ]
+        if self.project["start_node_id"] == node_id:
+            self.project["start_node_id"] = None
+        self.project.get("editor", {}).get("node_positions", {}).pop(node_id, None)
+        self.mark_dirty()
+        self.refresh_story()
+        self.text_panel.refresh()
+
     def connect_nodes(self):
         source = self.current_node()
         if source is None:
+            return
+        if source.get("ending") is not None:
+            QMessageBox.warning(self, "无法连接", "结局节点不能有后继")
             return
         targets = [node for node in self.project["nodes"] if node["id"] != source["id"]]
         if not targets:
@@ -346,11 +437,111 @@ class MakerWindow(QMainWindow):
                 condition = parse_condition(
                     expression, self.project["variables"], source.get("choices", []),
                 )
-            self.editor.add_edge(source["id"], target["id"], condition)
+            edge = self.editor.add_edge(source["id"], target["id"], condition)
         except ValueError as error:
             QMessageBox.warning(self, "无法连接", str(error))
             return
         self.mark_dirty()
+        self.draw_graph()
+        self.refresh_edges(source)
+        for index in range(self.edges_list.count()):
+            row = self.edges_list.item(index)
+            if row.data(Qt.ItemDataRole.UserRole) == edge["id"]:
+                self.edges_list.setCurrentItem(row)
+                break
+
+    def edit_edge_condition(self):
+        node = self.current_node()
+        edge = self.current_edge()
+        if node is None or edge is None:
+            return
+        try:
+            current = (
+                format_condition(edge["condition"], self.project["variables"], node.get("choices", []))
+                if edge["condition"] is not None else ""
+            )
+        except (KeyError, TypeError, ValueError):
+            current = ""
+        expression, accepted = QInputDialog.getText(
+            self, "连接条件", "条件表达式", text=current,
+        )
+        if not accepted:
+            return
+        try:
+            condition = (
+                parse_condition(expression, self.project["variables"], node.get("choices", []))
+                if expression.strip() else None
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "条件错误", str(error))
+            return
+        edge["condition"] = condition
+        self.mark_dirty()
+        self.refresh_edges(node)
+
+    def add_edge_effect(self):
+        node = self.current_node()
+        edge = self.current_edge()
+        if node is None or edge is None:
+            return
+        variables = self.project["variables"]
+        if not variables:
+            QMessageBox.information(self, "变量", "请先创建变量")
+            return
+        labels = [f"{variable['name']} [{variable['id'][:8]}]" for variable in variables]
+        selected, accepted = QInputDialog.getItem(
+            self, "连接变量变化", "变量", labels, editable=False,
+        )
+        if not accepted:
+            return
+        variable = variables[labels.index(selected)]
+        operations = ["set", "add", "subtract"] if variable["type"] == "int" else ["set"]
+        operation, accepted = QInputDialog.getItem(
+            self, "连接变量变化", "操作", operations, editable=False,
+        )
+        if not accepted:
+            return
+        if variable["type"] == "int":
+            value, accepted = self.integer_input("连接变量变化", "值")
+        else:
+            selected, accepted = QInputDialog.getItem(
+                self, "连接变量变化", "值", ["false", "true"], editable=False,
+            )
+            value = selected == "true"
+        if accepted:
+            edge.setdefault("effects", []).append({
+                "variable_id": variable["id"], "op": operation, "value": value,
+            })
+            self.mark_dirty()
+            self.refresh_edges(node)
+
+    def remove_edge_effect(self):
+        node = self.current_node()
+        edge = self.current_edge()
+        if node is None or edge is None or not edge.get("effects"):
+            return
+        names = {variable["id"]: variable["name"] for variable in self.project["variables"]}
+        labels = [
+            f"{index + 1}. {names.get(effect['variable_id'], '缺失变量')} "
+            f"{effect['op']} {effect['value']}"
+            for index, effect in enumerate(edge["effects"])
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self, "移除变量变化", "变更", labels, editable=False,
+        )
+        if accepted:
+            edge["effects"].pop(labels.index(selected))
+            self.mark_dirty()
+            self.refresh_edges(node)
+
+    def delete_edge(self):
+        node = self.current_node()
+        edge = self.current_edge()
+        if node is None or edge is None:
+            return
+        self.project["edges"].remove(edge)
+        self.mark_dirty()
+        self.refresh_edges(node)
         self.draw_graph()
 
     def set_start(self):
@@ -374,11 +565,32 @@ class MakerWindow(QMainWindow):
         self.mark_dirty()
         self.refresh_story(node["id"])
 
+    def set_credits_video(self):
+        node = self.current_node()
+        if node is None:
+            return
+        if node.get("ending") is None:
+            QMessageBox.information(self, "片尾", "请先将叶节点设为结局")
+            return
+        labels, assets = self._asset_options("video")
+        options = ["不播放片尾", *labels]
+        selected, accepted = QInputDialog.getItem(
+            self, "片尾视频", "素材", options, editable=False,
+        )
+        if accepted:
+            node["ending"]["credits_video_asset_id"] = (
+                None if selected == "不播放片尾" else assets[labels.index(selected)]["id"]
+            )
+            self.mark_dirty()
+
     def add_variable(self):
         if not self.require_project():
             return
         name, accepted = QInputDialog.getText(self, "新建变量", "变量名称")
         if not accepted or not name.strip():
+            return
+        if not name.isidentifier() or name in {"choice", "true", "false"}:
+            QMessageBox.warning(self, "变量", "变量名须是可用于条件表达式的标识符")
             return
         if any(variable["name"] == name for variable in self.project["variables"]):
             QMessageBox.warning(self, "变量", "变量名称已存在")
@@ -387,7 +599,7 @@ class MakerWindow(QMainWindow):
         if not accepted:
             return
         if kind == "int":
-            value, accepted = QInputDialog.getInt(self, "初始值", name)
+            value, accepted = self.integer_input("初始值", name)
         else:
             selected, accepted = QInputDialog.getItem(
                 self, "初始值", name, ["false", "true"], editable=False,
@@ -400,9 +612,22 @@ class MakerWindow(QMainWindow):
             })
             self.mark_dirty()
 
+    def integer_input(self, title: str, prompt: str) -> tuple[int, bool]:
+        raw, accepted = QInputDialog.getText(self, title, prompt, text="0")
+        if not accepted:
+            return 0, False
+        try:
+            return int(raw), True
+        except ValueError:
+            QMessageBox.warning(self, title, "请输入整数")
+            return 0, False
+
     def add_choice(self):
         node = self.current_node()
         if node is None:
+            return
+        if node.get("ending") is not None:
+            QMessageBox.warning(self, "选项", "结局节点不能有选项")
             return
         text, accepted = QInputDialog.getText(self, "添加选项", "选项文字")
         if accepted and text.strip():
@@ -481,6 +706,17 @@ class MakerWindow(QMainWindow):
             if not accepted:
                 return
             fields["slot"] = slot
+            if kind == "show_sprite":
+                scale, accepted = QInputDialog.getInt(
+                    self, "立绘缩放", "百分比", 100, 25, 200,
+                )
+                if not accepted:
+                    return
+                defaults = {"left": (480, 1), "center": (960, 2), "right": (1440, 3)}
+                x, z = defaults[slot]
+                fields["placement"] = {
+                    "x": x, "y": 1040, "scale_pct": scale, "z": z,
+                }
         self.editor.add_item(node["id"], kind, **fields)
         self.mark_dirty()
         self.on_node_selected(None, None)
@@ -492,16 +728,55 @@ class MakerWindow(QMainWindow):
             return
         item_id = row.data(Qt.ItemDataRole.UserRole)
         item = next((entry for entry in node["items"] if entry["id"] == item_id), None)
-        if item is None or item["type"] not in {"dialogue", "narration"}:
+        if item is None:
             return
-        text, accepted = QInputDialog.getMultiLineText(
-            self, "编辑文本", "正文", item["text"],
-        )
-        if accepted and text:
+        kind = item["type"]
+        if kind in {"dialogue", "narration"}:
+            text, accepted = QInputDialog.getMultiLineText(
+                self, "编辑文本", "正文", item["text"],
+            )
+            if not accepted or not text:
+                return
             item["text"] = text
-            self.mark_dirty()
-            self.on_node_selected(None, None)
             self.text_panel.refresh()
+        elif kind in {"set_background", "show_sprite", "play_bgm", "play_sfx"}:
+            asset_kind = "image" if kind in {"set_background", "show_sprite"} else (
+                "bgm" if kind == "play_bgm" else "sfx"
+            )
+            labels, assets = self._asset_options(asset_kind)
+            if kind == "set_background":
+                labels = ["清除背景", *labels]
+            if not labels:
+                return
+            selected, accepted = QInputDialog.getItem(
+                self, "更换素材", "素材", labels, editable=False,
+            )
+            if not accepted:
+                return
+            asset_id = None if selected == "清除背景" else assets[
+                labels.index(selected) - (1 if kind == "set_background" else 0)
+            ]["id"]
+            if kind == "show_sprite":
+                placement = item.get("placement") or {}
+                scale, accepted = QInputDialog.getInt(
+                    self, "立绘缩放", "百分比", placement.get("scale_pct", 100), 25, 200,
+                )
+                if not accepted:
+                    return
+                item.setdefault("placement", {})["scale_pct"] = scale
+            item["asset_id"] = asset_id
+        elif kind == "hide_sprite":
+            selected, accepted = QInputDialog.getItem(
+                self, "立绘槽位", "槽位", ["left", "center", "right"],
+                ["left", "center", "right"].index(item["slot"]), editable=False,
+            )
+            if not accepted:
+                return
+            item["slot"] = selected
+        else:
+            return
+        self.mark_dirty()
+        self.on_node_selected(None, None)
 
     def move_item(self, offset: int):
         node = self.current_node()

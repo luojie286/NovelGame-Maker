@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from typing import Any
 
 from .conditions import ConditionError, validate_condition
@@ -118,3 +119,35 @@ def parse_condition(
     definitions = {variable["id"]: variable for variable in variables}
     validate_condition(tree, definitions, {choice["id"] for choice in choices})
     return tree
+
+
+def format_condition(
+    tree: dict[str, Any],
+    variables: list[dict[str, Any]],
+    choices: list[dict[str, Any]],
+) -> str:
+    """Render a saved condition using current labels and explicit grouping."""
+    names = {variable["id"]: variable["name"] for variable in variables}
+    labels = {choice["id"]: choice["text"] for choice in choices}
+    operators = {
+        "eq": "==", "ne": "!=", "gt": ">", "ge": ">=",
+        "lt": "<", "le": "<=",
+    }
+
+    def render(node: dict[str, Any]) -> str:
+        if node.get("op") in {"and", "or"}:
+            joined = f" {node['op']} ".join(render(child) for child in node["args"])
+            return f"({joined})"
+        kind = node["kind"]
+        if kind == "boolean":
+            return names[node["variable_id"]]
+        if kind == "choice":
+            return f"choice == {json.dumps(labels[node['choice_id']], ensure_ascii=False)}"
+        value = node["value"]
+        if type(value) is bool:
+            literal = "true" if value else "false"
+        else:
+            literal = str(value)
+        return f"{names[node['variable_id']]} {operators[node['op']]} {literal}"
+
+    return render(tree)
