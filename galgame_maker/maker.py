@@ -20,6 +20,7 @@ from .export import export_game
 from .maker_assets import AssetPanel
 from .maker_characters import CharacterPanel
 from .maker_text import TextPanel
+from .maker_theme import ThemePanel
 from .player import PlayerWindow
 from .project import create_project, load_project, save_project
 from .runtime_data import compile_game
@@ -75,6 +76,8 @@ class MakerWindow(QMainWindow):
         tabs.addTab(self.character_panel, "角色与关系")
         self.text_panel = TextPanel(self)
         tabs.addTab(self.text_panel, "文本与设定")
+        self.theme_panel = ThemePanel(self)
+        tabs.addTab(self.theme_panel, "界面主题")
         self.tabs = tabs
         self.update_title()
 
@@ -213,6 +216,7 @@ class MakerWindow(QMainWindow):
         self.asset_panel.refresh()
         self.character_panel.refresh()
         self.text_panel.refresh()
+        self.theme_panel.load_part()
 
     def save(self) -> bool:
         if not self.require_project():

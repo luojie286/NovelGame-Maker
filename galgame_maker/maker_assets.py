@@ -139,6 +139,8 @@ class AssetPanel(QWidget):
             return
         self.window.mark_dirty()
         self.refresh()
+        self.window.character_panel.refresh()
+        self.window.theme_panel.load_part()
         for index in range(self.list.count()):
             row = self.list.item(index)
             if row.data(Qt.ItemDataRole.UserRole) == record["id"]:
@@ -157,6 +159,8 @@ class AssetPanel(QWidget):
         self.window.project["assets"].remove(asset)
         self.window.mark_dirty()
         self.refresh()
+        self.window.character_panel.refresh()
+        self.window.theme_panel.load_part()
 
     def preview(self, *_):
         self.player.stop()
