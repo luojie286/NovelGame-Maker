@@ -18,6 +18,7 @@ from .condition_parser import parse_condition
 from .editing import ProjectEditor
 from .export import export_game
 from .maker_assets import AssetPanel
+from .maker_characters import CharacterPanel
 from .player import PlayerWindow
 from .project import create_project, load_project, save_project
 from .runtime_data import compile_game
@@ -69,6 +70,8 @@ class MakerWindow(QMainWindow):
         tabs.addTab(self._make_story_tab(), "剧情")
         self.asset_panel = AssetPanel(self)
         tabs.addTab(self.asset_panel, "素材")
+        self.character_panel = CharacterPanel(self)
+        tabs.addTab(self.character_panel, "角色与关系")
         self.tabs = tabs
         self.update_title()
 
@@ -205,6 +208,7 @@ class MakerWindow(QMainWindow):
         self.update_title()
         self.refresh_story()
         self.asset_panel.refresh()
+        self.character_panel.refresh()
 
     def save(self) -> bool:
         if not self.require_project():
