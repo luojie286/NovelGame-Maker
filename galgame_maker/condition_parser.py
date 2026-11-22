@@ -12,6 +12,8 @@ from .conditions import ConditionError, validate_condition
 COMPARISON_NAMES = {
     ast.Eq: "eq",
     ast.NotEq: "ne",
+    ast.Is: "eq",
+    ast.IsNot: "ne",
     ast.Gt: "gt",
     ast.GtE: "ge",
     ast.Lt: "lt",
@@ -81,6 +83,8 @@ def parse_condition(
         reject(node, "comparison value must be a literal")
 
     def convert(node: ast.AST) -> dict[str, Any]:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return {"op": "not", "arg": convert(node.operand)}
         if isinstance(node, ast.BoolOp):
             if not isinstance(node.op, (ast.And, ast.Or)):
                 reject(node, "unsupported logical operator")
@@ -97,15 +101,15 @@ def parse_condition(
             if len(node.ops) != 1 or len(node.comparators) != 1:
                 reject(node, "chained comparisons are unsupported")
             if not isinstance(node.left, ast.Name):
-                reject(node, "left side must be a variable or choice")
+                reject(node.left, "left side must be a variable or choice")
             operation = COMPARISON_NAMES.get(type(node.ops[0]))
             if operation is None:
                 reject(node, "unsupported comparison operator")
             if node.left.id == "choice":
                 label = value(node.comparators[0])
-                if operation != "eq" or not isinstance(label, str) or label not in labels:
-                    reject(node, "choice must equal a known option label")
-                return {"kind": "choice", "op": "eq", "choice_id": labels[label]}
+                if operation not in {"eq", "ne"} or not isinstance(label, str) or label not in labels:
+                    reject(node, "choice must compare with a known option label using ==, !=, is, or is not")
+                return {"kind": "choice", "op": operation, "choice_id": labels[label]}
             variable = names.get(node.left.id)
             if variable is None:
                 reject(node.left, "unknown variable")
@@ -135,6 +139,8 @@ def format_condition(
     }
 
     def render(node: dict[str, Any]) -> str:
+        if node.get("op") == "not":
+            return f"(not {render(node['arg'])})"
         if node.get("op") in {"and", "or"}:
             joined = f" {node['op']} ".join(render(child) for child in node["args"])
             return f"({joined})"
@@ -142,7 +148,8 @@ def format_condition(
         if kind == "boolean":
             return names[node["variable_id"]]
         if kind == "choice":
-            return f"choice == {json.dumps(labels[node['choice_id']], ensure_ascii=False)}"
+            op_text = "==" if node["op"] == "eq" else "!="
+            return f"choice {op_text} {json.dumps(labels[node['choice_id']], ensure_ascii=False)}"
         value = node["value"]
         if type(value) is bool:
             literal = "true" if value else "false"

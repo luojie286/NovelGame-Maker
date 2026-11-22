@@ -40,6 +40,8 @@ def referenced_variable_ids(tree: dict[str, Any] | None) -> set[str]:
     """Collect all variable IDs referenced by a condition tree."""
     if not isinstance(tree, dict):
         return set()
+    if tree.get("op") == "not":
+        return referenced_variable_ids(tree.get("arg"))
     if tree.get("op") in {"and", "or"}:
         found: set[str] = set()
         for child in tree.get("args", []):
@@ -141,6 +143,8 @@ def check_overlap(
 
     def expression(tree: dict[str, Any]) -> z3.BoolRef:
         operator = tree.get("op")
+        if operator == "not":
+            return z3.Not(expression(tree["arg"]))
         if operator == "and":
             return z3.And(*(expression(child) for child in tree["args"]))
         if operator == "or":
@@ -149,7 +153,8 @@ def check_overlap(
         if kind == "boolean":
             return symbols[tree["variable_id"]]
         if kind == "choice":
-            return current_choice == ordered_choices.index(tree["choice_id"])
+            idx = ordered_choices.index(tree["choice_id"])
+            return (current_choice == idx) if operator == "eq" else (current_choice != idx)
         left = symbols[tree["variable_id"]]
         right = tree["value"]
         return COMPARISONS[operator](left, right)
