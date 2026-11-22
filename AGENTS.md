@@ -20,7 +20,7 @@
 
 ### 媒体与打包探针
 
-在项目根目录执行 `pwsh -File tools/media_probe/build.ps1`。构建机使用 Windows x64、Python 3.13、安装了 `PySide6_Addons` 和 `PyInstaller` 的 `.venv`，并通过 PATH 提供含 libx264 和 libmp3lame 编码器的 FFmpeg。构建产物位于 `dist/MediaProbe/`，本次依赖版本及文件清单位于 `build/media_probe/`。
+在项目根目录使用 Python 3.13 创建 `.venv`，执行 `.venv\Scripts\python.exe -m pip install -r requirements-build.txt`，再执行 `pwsh -File tools/media_probe/build.ps1`。构建机使用 Windows x64，并通过 PATH 提供含 libx264 和 libmp3lame 编码器的 FFmpeg。构建产物位于 `dist/MediaProbe/`，本次依赖版本及文件清单位于 `build/media_probe/`。
 
 将整个 `dist/MediaProbe/` 复制到验收机器的含中文和空格的可写目录，双击 `MediaProbe.exe`。循环 BGM 后播放 WAV，分别播放并退出两种片尾，检查损坏文件的提示，关闭后重新启动。媒体后端和播放事件记录在 exe 旁的 `probe.log`。干净离线环境和实际声画的要求见本地架构验收文档。
 

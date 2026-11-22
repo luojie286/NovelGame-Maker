@@ -24,8 +24,7 @@ try {
     if ($LASTEXITCODE) { throw "PyInstaller failed ($LASTEXITCODE)." }
     Copy-Item -LiteralPath $fixtures -Destination (Join-Path $bundle "media") -Recurse
 
-    # The lock file follows offline acceptance. Keep the exact candidate versions
-    # and packaged binary inventory next to the build for the verification record.
+    # Preserve the environment and bundled binary inventory for each build.
     @(& $pythonExe --version; & $pythonExe -m pip freeze --all) |
         Set-Content -Encoding utf8 (Join-Path $buildRoot "versions.txt")
     Get-ChildItem -LiteralPath $bundle -Recurse -File |
