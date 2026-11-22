@@ -19,6 +19,7 @@ from .editing import ProjectEditor
 from .export import export_game
 from .maker_assets import AssetPanel
 from .maker_characters import CharacterPanel
+from .maker_text import TextPanel
 from .player import PlayerWindow
 from .project import create_project, load_project, save_project
 from .runtime_data import compile_game
@@ -72,6 +73,8 @@ class MakerWindow(QMainWindow):
         tabs.addTab(self.asset_panel, "素材")
         self.character_panel = CharacterPanel(self)
         tabs.addTab(self.character_panel, "角色与关系")
+        self.text_panel = TextPanel(self)
+        tabs.addTab(self.text_panel, "文本与设定")
         self.tabs = tabs
         self.update_title()
 
@@ -209,6 +212,7 @@ class MakerWindow(QMainWindow):
         self.refresh_story()
         self.asset_panel.refresh()
         self.character_panel.refresh()
+        self.text_panel.refresh()
 
     def save(self) -> bool:
         if not self.require_project():
@@ -493,6 +497,7 @@ class MakerWindow(QMainWindow):
             item["text"] = text
             self.mark_dirty()
             self.on_node_selected(None, None)
+            self.text_panel.refresh()
 
     def move_item(self, offset: int):
         node = self.current_node()
@@ -516,6 +521,7 @@ class MakerWindow(QMainWindow):
         if len(node["items"]) != before:
             self.mark_dirty()
             self.on_node_selected(None, None)
+            self.text_panel.refresh()
 
     def preview(self):
         if not self.require_project():
