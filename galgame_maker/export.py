@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .branch_check import BranchCheckCache
 from .project import resolve_asset_path
 from .runtime_data import compile_game
 
@@ -32,6 +33,7 @@ def export_game(
     project_directory: Path | str,
     target_directory: Path | str,
     player_bundle: Path | str,
+    branch_cache: BranchCheckCache | None = None,
 ) -> dict[str, Any]:
     """Build fully in a sibling directory, then replace the published game.
 
@@ -47,7 +49,7 @@ def export_game(
         raise ExportError(f"target is not a directory: {target}")
     if target == source_root or source_root.is_relative_to(target):
         raise ExportError("export target cannot contain the editable project")
-    game = compile_game(project, source_root)
+    game = compile_game(project, source_root, branch_cache=branch_cache)
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.new.", dir=parent))

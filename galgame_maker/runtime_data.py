@@ -11,7 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from .branch_check import check_overlap
+from .branch_check import BranchCheckCache, check_overlap
 from .conditions import ConditionError, validate_condition
 from .project import validate_project
 
@@ -39,7 +39,11 @@ def _canonical_digest(value: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def compile_game(project: dict[str, Any], directory: Path | str) -> dict[str, Any]:
+def compile_game(
+    project: dict[str, Any],
+    directory: Path | str,
+    branch_cache: BranchCheckCache | None = None,
+) -> dict[str, Any]:
     """Use the same whole-graph validation for preview and published builds."""
     validate_project(project, directory)
     nodes = {node["id"]: node for node in project["nodes"]}
@@ -149,13 +153,32 @@ def compile_game(project: dict[str, Any], directory: Path | str) -> dict[str, An
                 if operation != "set" and not (kind == "int" and operation in {"add", "subtract"}):
                     raise CompileError(f"edge {edge['id']} invalid effect operation")
         for first, second in itertools.combinations(outgoing, 2):
-            result = check_overlap(
-                first["condition"], second["condition"], variables, choice_ids,
-            )
+            if branch_cache is not None:
+                result = branch_cache.check_pair(
+                    first["condition"], second["condition"], variables, choice_ids,
+                )
+            else:
+                result = check_overlap(
+                    first["condition"], second["condition"], variables, choice_ids,
+                )
             if result.status != "pass":
+                detail = result.reason
+                if result.variables is not None:
+                    named = {
+                        variables[vid]["name"]: val
+                        for vid, val in result.variables.items()
+                        if vid in variables
+                    }
+                    if result.choice_id is not None:
+                        choice_text = next(
+                            (c["text"] for c in choices if c["id"] == result.choice_id),
+                            result.choice_id,
+                        )
+                        named["choice"] = choice_text
+                    detail = str(named)
                 raise CompileError(
-                    f"node {node_id} edges {first['id']} and {second['id']}: "
-                    f"branch check {result.status}; {result.variables or result.reason}"
+                    f"node {node['name']} ({node_id}) edges {first['id']} and {second['id']}: "
+                    f"branch check {result.status}; {detail}"
                 )
 
     theme_input = project.get("theme", {})

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import sys
+from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPointF, QTimer
-from PySide6.QtGui import QAction, QColor, QPen
+from PySide6.QtCore import Qt, QPointF, QThread, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QGraphicsItem, QGraphicsRectItem,
     QGraphicsScene, QGraphicsTextItem, QGraphicsView, QHBoxLayout,
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from .branch_check import BranchCheckCache, NodeCheckState
 from .condition_parser import format_condition, parse_condition
 from .editing import ProjectEditor
 from .export import export_game
@@ -26,23 +29,87 @@ from .project import create_project, load_project, save_project
 from .runtime_data import compile_game
 
 
+class BranchCheckWorker(QThread):
+    """Run one time-budgeted Z3 branch-check batch off the UI thread."""
+
+    batch_finished = Signal(dict, dict)
+
+    def __init__(
+        self,
+        snapshot: dict,
+        pair_cache: dict,
+        node_ids: list[str] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.snapshot = snapshot
+        self.pair_cache = pair_cache
+        self.node_ids = node_ids
+
+    def run(self):
+        worker_cache = BranchCheckCache()
+        worker_cache.load_pairs(self.pair_cache)
+        states = worker_cache.check_batch(
+            self.snapshot,
+            node_ids=self.node_ids,
+            pair_timeout_ms=2000,
+            batch_budget_ms=10000,
+        )
+        self.batch_finished.emit(states, worker_cache.snapshot_pairs())
+
+
 class NodeShape(QGraphicsRectItem):
-    def __init__(self, window: "MakerWindow", node: dict, x: int, y: int):
+    def __init__(
+        self,
+        window: "MakerWindow",
+        node: dict,
+        x: int,
+        y: int,
+        status: str = "pass",
+        is_start: bool = False,
+        is_ending: bool = False,
+        is_unended_leaf: bool = False,
+    ):
         super().__init__(0, 0, 180, 78)
         self.window = window
         self.node = node
         self.setPos(x, y)
-        self.setBrush(QColor("#283747"))
-        self.setPen(QPen(QColor("#69819A"), 2))
+        border = "#69819A"
+        fill = "#283747"
+        badges: list[str] = []
+        if is_start:
+            border = "#4EA8DE"
+            badges.append("开场")
+        if is_ending:
+            border = "#52B788"
+            badges.append("结局")
+        elif is_unended_leaf:
+            border = "#D4A373"
+            badges.append("未设结局")
+        if status == "conflict":
+            border = "#E05A47"
+            fill = "#4A2525"
+            badges.append("冲突")
+        elif status == "incomplete":
+            border = "#E0A447"
+            fill = "#473A22"
+            badges.append("未完成")
+        elif status in {"pending", "checking"}:
+            badges.append("待检查")
+        self.setBrush(QColor(fill))
+        self.setPen(QPen(QColor(border), 2))
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
             | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
-        caption = QGraphicsTextItem(node["name"], self)
+        text = node["name"]
+        if badges:
+            text += f"\n[{' · '.join(badges)}]"
+        caption = QGraphicsTextItem(text, self)
         caption.setDefaultTextColor(QColor("white"))
         caption.setTextWidth(168)
-        caption.setPos(6, 18)
+        caption.setPos(6, 12)
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
@@ -64,6 +131,13 @@ class MakerWindow(QMainWindow):
         self.editor: ProjectEditor | None = None
         self.dirty = False
         self.preview_window: PlayerWindow | None = None
+        self.branch_cache = BranchCheckCache()
+        self._branch_worker: BranchCheckWorker | None = None
+        self._branch_recheck_needed = False
+        self.branch_check_timer = QTimer(self)
+        self.branch_check_timer.setSingleShot(True)
+        self.branch_check_timer.setInterval(300)
+        self.branch_check_timer.timeout.connect(self._start_background_branch_check)
         self.setWindowTitle("GalGame Maker")
         self.resize(1280, 820)
         self._make_menu()
@@ -79,6 +153,8 @@ class MakerWindow(QMainWindow):
         self.theme_panel = ThemePanel(self)
         tabs.addTab(self.theme_panel, "界面主题")
         self.tabs = tabs
+        self.branch_status_label = QLabel("分支检查：未打开项目")
+        self.statusBar().addPermanentWidget(self.branch_status_label)
         self.update_title()
 
     def _make_menu(self):
@@ -108,6 +184,7 @@ class MakerWindow(QMainWindow):
             ("设置结局", self.set_ending),
             ("片尾视频", self.set_credits_video),
             ("新建变量", self.add_variable),
+            ("检查分支", self.retry_branch_check),
             ("预览", self.preview),
         ):
             button = QPushButton(label)
@@ -169,6 +246,8 @@ class MakerWindow(QMainWindow):
     def mark_dirty(self):
         self.dirty = True
         self.update_title()
+        if self.project is not None:
+            self.schedule_branch_check()
 
     def require_project(self) -> bool:
         if self.project is not None:
@@ -224,6 +303,8 @@ class MakerWindow(QMainWindow):
         self.set_project(Path(folder), project)
 
     def set_project(self, root: Path, project: dict):
+        self._stop_branch_worker()
+        self.branch_cache.clear()
         self.root = root
         self.project = project
         self.editor = ProjectEditor(project)
@@ -234,6 +315,95 @@ class MakerWindow(QMainWindow):
         self.character_panel.refresh()
         self.text_panel.refresh()
         self.theme_panel.load_part()
+        self.schedule_branch_check()
+
+    def _stop_branch_worker(self):
+        self.branch_check_timer.stop()
+        self._branch_recheck_needed = False
+        if self._branch_worker is not None:
+            if self._branch_worker.isRunning():
+                self._branch_worker.wait(3000)
+            self._branch_worker = None
+
+    def schedule_branch_check(self):
+        if self.project is None:
+            self.branch_status_label.setText("分支检查：未打开项目")
+            return
+        self.branch_check_timer.start()
+        self.update_branch_status_label()
+
+    def retry_branch_check(self):
+        if not self.require_project():
+            return
+        self._start_background_branch_check(force_all=True)
+
+    def _start_background_branch_check(self, force_all: bool = False):
+        if self.project is None:
+            return
+        if self._branch_worker is not None and self._branch_worker.isRunning():
+            self._branch_recheck_needed = True
+            return
+        pending_ids = []
+        for node in self.project["nodes"]:
+            state = self.branch_cache.get_node_state(self.project, node["id"])
+            if force_all or state.status in {"pending", "incomplete"}:
+                pending_ids.append(node["id"])
+        if not pending_ids:
+            self.update_branch_status_label()
+            return
+        self.branch_status_label.setText(f"分支检查中（待查 {len(pending_ids)} 节点）...")
+        worker = BranchCheckWorker(
+            deepcopy(self.project),
+            self.branch_cache.snapshot_pairs(),
+            node_ids=pending_ids,
+            parent=self,
+        )
+        worker.batch_finished.connect(self._on_branch_batch_finished)
+        self._branch_worker = worker
+        worker.start()
+
+    def _on_branch_batch_finished(self, states: dict[str, NodeCheckState], pairs: dict):
+        self._branch_worker = None
+        if self.project is None:
+            return
+        self.branch_cache.merge_node_states(self.project, states, pairs)
+        self.update_branch_status_label()
+        self.draw_graph()
+        still_pending = any(
+            self.branch_cache.get_node_state(self.project, node["id"]).status == "pending"
+            for node in self.project["nodes"]
+        )
+        if self._branch_recheck_needed or still_pending:
+            self._branch_recheck_needed = False
+            self.branch_check_timer.start()
+
+    def update_branch_status_label(self):
+        if self.project is None:
+            self.branch_status_label.setText("分支检查：未打开项目")
+            return
+        nodes = self.project["nodes"]
+        if not nodes:
+            self.branch_status_label.setText("分支检查：无节点")
+            return
+        conflicts = 0
+        incomplete = 0
+        pending = 0
+        for node in nodes:
+            status = self.branch_cache.get_node_state(self.project, node["id"]).status
+            if status == "conflict":
+                conflicts += 1
+            elif status == "incomplete":
+                incomplete += 1
+            elif status == "pending":
+                pending += 1
+        if conflicts:
+            self.branch_status_label.setText(f"分支检查：{conflicts} 个节点存在冲突")
+        elif incomplete:
+            self.branch_status_label.setText(f"分支检查：{incomplete} 个节点未完成")
+        elif pending:
+            self.branch_status_label.setText(f"分支检查：待检查 {pending} 节点")
+        else:
+            self.branch_status_label.setText(f"分支检查：全部通过（{len(nodes)} 节点）")
 
     def save(self) -> bool:
         if not self.require_project():
@@ -288,9 +458,23 @@ class MakerWindow(QMainWindow):
             return
         shapes = {}
         positions = self.project.get("editor", {}).get("node_positions", {})
+        outgoing_counts = {node["id"]: 0 for node in self.project["nodes"]}
+        for edge in self.project["edges"]:
+            if edge["from_node_id"] in outgoing_counts:
+                outgoing_counts[edge["from_node_id"]] += 1
         for index, node in enumerate(self.project["nodes"]):
             point = positions.get(node["id"], {"x": index % 4 * 240, "y": index // 4 * 145})
-            shape = NodeShape(self, node, point["x"], point["y"])
+            state = self.branch_cache.get_node_state(self.project, node["id"])
+            is_start = node["id"] == self.project.get("start_node_id")
+            is_ending = node.get("ending") is not None
+            is_unended_leaf = (not is_ending) and outgoing_counts.get(node["id"], 0) == 0
+            shape = NodeShape(
+                self, node, point["x"], point["y"],
+                status=state.status,
+                is_start=is_start,
+                is_ending=is_ending,
+                is_unended_leaf=is_unended_leaf,
+            )
             self.scene.addItem(shape)
             shapes[node["id"]] = shape
         for edge in self.project["edges"]:
@@ -300,8 +484,21 @@ class MakerWindow(QMainWindow):
                 continue
             start = source.scenePos() + QPointF(180, 39)
             end = target.scenePos() + QPointF(0, 39)
-            line = self.scene.addLine(start.x(), start.y(), end.x(), end.y(), QPen(QColor("#7DA9C7"), 2))
+            line_pen = QPen(QColor("#7DA9C7"), 2)
+            line = self.scene.addLine(start.x(), start.y(), end.x(), end.y(), line_pen)
             line.setZValue(-1)
+            dx, dy = end.x() - start.x(), end.y() - start.y()
+            distance = math.hypot(dx, dy)
+            if distance > 0:
+                ux, uy = dx / distance, dy / distance
+                base_x, base_y = end.x() - ux * 12, end.y() - uy * 12
+                arrow = QPolygonF([
+                    end,
+                    QPointF(base_x - uy * 6, base_y + ux * 6),
+                    QPointF(base_x + uy * 6, base_y - ux * 6),
+                ])
+                arrow_item = self.scene.addPolygon(arrow, line_pen, QColor("#7DA9C7"))
+                arrow_item.setZValue(-1)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-40, -40, 40, 40))
 
     def on_node_selected(self, current, previous):
@@ -806,7 +1003,7 @@ class MakerWindow(QMainWindow):
         if not self.require_project():
             return
         try:
-            game = compile_game(self.project, self.root)
+            game = compile_game(self.project, self.root, branch_cache=self.branch_cache)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "无法预览", str(error))
             return
@@ -829,7 +1026,10 @@ class MakerWindow(QMainWindow):
         else:
             player = Path(__file__).resolve().parent.parent / "dist" / "GalGamePlayer"
         try:
-            export_game(self.project, self.root, Path(target) / name, player)
+            export_game(
+                self.project, self.root, Path(target) / name, player,
+                branch_cache=self.branch_cache,
+            )
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "导出失败", str(error))
             return
@@ -837,6 +1037,7 @@ class MakerWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self._change_project():
+            self._stop_branch_worker()
             event.accept()
         else:
             event.ignore()
