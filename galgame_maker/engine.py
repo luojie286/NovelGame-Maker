@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from .conditions import evaluate_condition, validate_condition
+from .text_pages import page_end, valid_page_start
 
 
 class StoryError(ValueError):
@@ -52,6 +53,7 @@ class StoryEngine:
         self.choices: dict[str, str] = {}
         self.node_id = game["start_node_id"]
         self.item_index = 0
+        self.page_start_offset = 0
         self.phase = "starting"
         self.error: str | None = None
         self.presentation = {
@@ -114,9 +116,22 @@ class StoryEngine:
     def advance(self) -> None:
         if self.phase != "waiting_advance":
             raise StoryError("advance is unavailable in this phase")
+        item = self.nodes[self.node_id]["items"][self.item_index]
+        next_offset = page_end(item["text"], self.page_start_offset)
+        if next_offset < len(item["text"]):
+            self.page_start_offset = next_offset
+            return
         self.item_index += 1
+        self.page_start_offset = 0
         self.presentation["line_item_id"] = None
         self._run_items()
+
+    def current_page(self) -> str:
+        if self.phase != "waiting_advance":
+            raise StoryError("no dialogue page is active")
+        text = self.nodes[self.node_id]["items"][self.item_index]["text"]
+        end = page_end(text, self.page_start_offset)
+        return text[self.page_start_offset:end]
 
     def select(self, choice_id: str) -> None:
         if self.phase not in {"waiting_choice", "stalled"}:
@@ -188,6 +203,7 @@ class StoryEngine:
         self.variables_state = next_values
         self.node_id = edge["to_node_id"]
         self.item_index = 0
+        self.page_start_offset = 0
         self.error = None
         self.phase = "starting"
         return True
@@ -212,7 +228,7 @@ class StoryEngine:
             "item_id": item_id,
             "variables": self.variables_state.copy(),
             "choices": self.choices.copy(),
-            "page_start_offset": 0 if item_id is not None else None,
+            "page_start_offset": self.page_start_offset if item_id is not None else None,
             "presentation": deepcopy(self.presentation),
         }
 
@@ -234,10 +250,17 @@ class StoryEngine:
             if len(indexes) != 1:
                 raise StoryError(f"save references missing text item: {item_id}")
             index = indexes[0]
+            offset = snapshot["page_start_offset"]
+            text = items[index]["text"]
+            if not valid_page_start(text, offset) or offset >= len(text):
+                raise StoryError("save page offset is invalid")
         else:
             if item_id is not None:
                 raise StoryError("save item_id must be null outside text")
             index = len(items)
+            if snapshot["page_start_offset"] is not None:
+                raise StoryError("save page offset must be null outside text")
+            offset = 0
         values = snapshot["variables"]
         if set(values) != set(self.variables):
             raise StoryError("save variables do not match the game")
@@ -250,6 +273,7 @@ class StoryEngine:
             raise StoryError("save presentation text is inconsistent")
         self.node_id = node_id
         self.item_index = index
+        self.page_start_offset = offset
         self.phase = phase
         self.variables_state = values.copy()
         self.choices = snapshot["choices"].copy()
