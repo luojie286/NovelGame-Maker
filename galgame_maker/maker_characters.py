@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QColor, QPen, QPolygonF
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QGraphicsScene, QGraphicsView,
+    QComboBox, QFormLayout, QGraphicsScene,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QSplitter, QTextEdit,
     QVBoxLayout, QWidget,
 )
+
+from .maker_graph import CharacterNodeItem, InteractiveGraphView, RelationEdgeItem
 
 
 class CharacterPanel(QWidget):
@@ -43,16 +44,25 @@ class CharacterPanel(QWidget):
         form.addRow("介绍", self.description)
         form.addRow("设定识别图", self.art)
         left_layout.addLayout(form)
+        update_row = QHBoxLayout()
         update_button = QPushButton("保存角色设置")
         update_button.clicked.connect(self.update_character)
-        left_layout.addWidget(update_button)
+        update_row.addWidget(update_button)
+        self.save_feedback = QLabel()
+        self.save_feedback.setStyleSheet("color: #2F855A; font-weight: bold;")
+        update_row.addWidget(self.save_feedback, 1)
+        left_layout.addLayout(update_row)
+        self._feedback_timer = QTimer(self)
+        self._feedback_timer.setSingleShot(True)
+        self._feedback_timer.setInterval(2500)
+        self._feedback_timer.timeout.connect(self.save_feedback.clear)
         split.addWidget(left)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("人物关系"))
+        right_layout.addWidget(QLabel("人物关系（空白处拖拽平移、滚轮缩放、节点可拖拽）"))
         self.scene = QGraphicsScene()
-        self.graph = QGraphicsView(self.scene)
+        self.graph = InteractiveGraphView(self.scene, dark=False)
         right_layout.addWidget(self.graph, 1)
         self.relations = QListWidget()
         right_layout.addWidget(self.relations)
@@ -167,6 +177,23 @@ class CharacterPanel(QWidget):
         self.window.mark_dirty()
         self.characters.currentItem().setText(character["name"])
         self.refresh_relations()
+        self.save_feedback.setText(f"✓ 已保存「{character['name']}」")
+        self._feedback_timer.start()
+        self.window.statusBar().showMessage(f"角色「{character['name']}」设置已保存", 2500)
+
+    def _on_character_moved(self, char_id: str, x: int, y: int):
+        if not self.window.project:
+            return
+        positions = self.window.project.setdefault("editor", {}).setdefault("character_positions", {})
+        positions[char_id] = {"x": x, "y": y}
+        self.window.mark_dirty()
+
+    def _select_character_by_id(self, char_id: str):
+        for index in range(self.characters.count()):
+            row = self.characters.item(index)
+            if row.data(Qt.ItemDataRole.UserRole) == char_id:
+                self.characters.setCurrentItem(row)
+                break
 
     def refresh_relations(self):
         self.relations.clear()
@@ -174,49 +201,52 @@ class CharacterPanel(QWidget):
         if not self.window.project:
             return
         characters = self.window.project["characters"]
-        positions = {}
+        saved_positions = self.window.project.get("editor", {}).get("character_positions", {})
+        nodes: dict[str, CharacterNodeItem] = {}
         count = max(1, len(characters))
         for index, character in enumerate(characters):
-            angle = 2 * math.pi * index / count
-            x = 320 + math.cos(angle) * 230
-            y = 250 + math.sin(angle) * 170
-            positions[character["id"]] = (x, y)
-            self.scene.addEllipse(x - 38, y - 38, 76, 76, QPen(QColor("#466E89"), 2), QColor("#243A48"))
-            label = self.scene.addText(character["name"])
-            label.setDefaultTextColor(QColor("white"))
-            label.setPos(x - 28, y - 12)
+            point = saved_positions.get(character["id"])
+            if point is not None:
+                x, y = point["x"], point["y"]
+            else:
+                angle = 2 * math.pi * index / count
+                x = 320 + math.cos(angle) * 200
+                y = 250 + math.sin(angle) * 160
+            item = CharacterNodeItem(
+                character, index, x, y,
+                on_moved=self._on_character_moved,
+                on_selected=self._select_character_by_id,
+            )
+            self.scene.addItem(item)
+            nodes[character["id"]] = item
         by_id = {character["id"]: character for character in characters}
+        pair_counts: dict[tuple[str, str], int] = {}
         for relation in self.window.project.get("relationships", []):
             source_id = relation["from_character_id"]
             target_id = relation["to_character_id"]
-            if source_id not in positions or target_id not in positions:
+            if source_id not in nodes or target_id not in nodes:
                 continue
-            x1, y1 = positions[source_id]
-            x2, y2 = positions[target_id]
-            line = self.scene.addLine(x1, y1, x2, y2, QPen(QColor("#B49B6B"), 2))
-            line.setZValue(-1)
-            if relation.get("directed", True):
-                distance = math.hypot(x2 - x1, y2 - y1)
-                if distance:
-                    along_x, along_y = (x2 - x1) / distance, (y2 - y1) / distance
-                    tip_x, tip_y = x2 - along_x * 40, y2 - along_y * 40
-                    wing_x, wing_y = tip_x - along_x * 14, tip_y - along_y * 14
-                    arrow = QPolygonF([
-                        QPointF(tip_x, tip_y),
-                        QPointF(wing_x - along_y * 7, wing_y + along_x * 7),
-                        QPointF(wing_x + along_y * 7, wing_y - along_x * 7),
-                    ])
-                    self.scene.addPolygon(arrow, QPen(QColor("#B49B6B")), QColor("#B49B6B"))
-            label = self.scene.addText(relation["label"])
-            label.setDefaultTextColor(QColor("#3C2D13"))
-            label.setPos((x1 + x2) / 2, (y1 + y2) / 2)
+            pair_key = tuple(sorted((source_id, target_id)))
+            seen = pair_counts.get(pair_key, 0)
+            pair_counts[pair_key] = seen + 1
+            curve_offset = 0.0 if seen == 0 else (38.0 * ((seen + 1) // 2) * (1 if seen % 2 else -1))
+            edge_item = RelationEdgeItem(
+                nodes[source_id], nodes[target_id],
+                label=relation["label"],
+                directed=relation.get("directed", True),
+                curve_offset=curve_offset,
+            )
+            self.scene.addItem(edge_item)
             arrow = "→" if relation.get("directed", True) else "↔"
             row = QListWidgetItem(
                 f"{by_id[source_id]['name']} {arrow} {by_id[target_id]['name']} · {relation['label']}"
             )
             row.setData(Qt.ItemDataRole.UserRole, relation["id"])
             self.relations.addItem(row)
-        self.scene.setSceneRect(0, 0, 650, 500)
+        bounds = self.scene.itemsBoundingRect().adjusted(-180, -180, 180, 180)
+        if bounds.isEmpty():
+            bounds = self.scene.sceneRect()
+        self.scene.setSceneRect(bounds)
 
     def add_relation(self):
         if not self.window.require_project():

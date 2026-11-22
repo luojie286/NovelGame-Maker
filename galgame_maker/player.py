@@ -355,7 +355,12 @@ class PlayerWindow(QMainWindow):
                 self.timer.start()
         else:
             self.speaker.clear()
-            self.text.setText("没有可进入的后继" if self.engine.error else "")
+            if self.engine.error:
+                self.text.setText("没有可进入的后继")
+            elif phase == "stalled" and not self.engine.nodes[self.engine.node_id].get("choices"):
+                self.text.setText("已到达当前分支终点（该节点未设为结局，可返回标题）")
+            else:
+                self.text.setText("")
         if phase in {"waiting_choice", "stalled"}:
             for choice in self.engine.nodes[self.engine.node_id].get("choices", []):
                 button = ThemedButton(choice["text"], self.game, self.root, "choice")

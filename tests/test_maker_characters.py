@@ -57,6 +57,20 @@ class CharacterPanelTests(unittest.TestCase):
             window.dirty = False
             window.close()
 
+    def test_save_character_shows_feedback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "中文 项目"
+            project = create_project(root, "短篇")
+            window = MakerWindow()
+            window.set_project(root, project)
+            window.editor.add_character("林晴")
+            window.character_panel.refresh()
+            window.character_panel.name.setText("林晴改")
+            window.character_panel.update_character()
+            self.assertIn("已保存", window.character_panel.save_feedback.text())
+            window.dirty = False
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

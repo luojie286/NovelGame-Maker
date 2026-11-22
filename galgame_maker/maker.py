@@ -7,12 +7,11 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPointF, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QPen, QPolygonF
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QGraphicsItem, QGraphicsRectItem,
-    QGraphicsScene, QGraphicsTextItem, QGraphicsView, QHBoxLayout,
+    QFileDialog, QFormLayout, QGraphicsScene, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QSpinBox, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
@@ -22,13 +21,225 @@ from .branch_check import BranchCheckCache, NodeCheckState, referenced_variable_
 from .condition_parser import format_condition, parse_condition
 from .editing import ProjectEditor
 from .export import export_game
-from .maker_assets import AssetPanel
+from .maker_assets import AssetPanel, AssetPickerDialog
 from .maker_characters import CharacterPanel
+from .maker_graph import InteractiveGraphView, StoryEdgeItem, StoryNodeItem
 from .maker_text import TextPanel
 from .maker_theme import ThemePanel
 from .player import PlayerWindow
-from .project import create_project, load_project, save_project
+from .project import create_project, load_project, resolve_asset_path, save_project
 from .runtime_data import compile_game
+
+ITEM_TYPE_LABELS = {
+    "dialogue": "对话",
+    "narration": "旁白",
+    "set_background": "设置背景",
+    "show_sprite": "显示立绘",
+    "hide_sprite": "隐藏立绘",
+    "play_bgm": "播放背景音乐",
+    "stop_bgm": "停止背景音乐",
+    "play_sfx": "播放音效",
+}
+
+
+class LiveStagePreview(QWidget):
+    """Real-time preview of the selected node's visual state up to the active step."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.root: Path | None = None
+        self.assets: dict[str, dict] = {}
+        self.images: dict[tuple[str, str], QImage] = {}
+        self.background_id: str | None = None
+        self.sprites: dict[str, dict] = {}
+        self.speaker: str = ""
+        self.dialogue_text: str = ""
+        self.status_hint: str = "选择节点或演出条目即可实时预览画面"
+        self.setMinimumHeight(200)
+
+    def clear_cache(self):
+        self.images.clear()
+
+    def _load_image(self, asset_id: str) -> QImage:
+        if self.root is None or asset_id not in self.assets:
+            return QImage()
+        asset = self.assets[asset_id]
+        cache_key = (asset_id, asset.get("sha256", ""))
+        if cache_key not in self.images:
+            try:
+                path = resolve_asset_path(self.root, asset["path"])
+                self.images[cache_key] = QImage(str(path))
+            except (OSError, ValueError):
+                return QImage()
+        return self.images[cache_key]
+
+    def set_state(
+        self,
+        root: Path | None,
+        project: dict | None,
+        background_id: str | None,
+        sprites: dict[str, dict],
+        speaker: str = "",
+        dialogue_text: str = "",
+        status_hint: str = "",
+    ):
+        self.root = root
+        self.assets = {a["id"]: a for a in project["assets"]} if project else {}
+        self.background_id = background_id
+        self.sprites = sprites
+        self.speaker = speaker
+        self.dialogue_text = dialogue_text
+        self.status_hint = status_hint
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor("#12151C"))
+        scale = min(self.width() / 1920, self.height() / 1080)
+        ox = (self.width() - 1920 * scale) / 2
+        oy = (self.height() - 1080 * scale) / 2
+        painter.save()
+        painter.translate(ox, oy)
+        painter.scale(scale, scale)
+        painter.fillRect(QRectF(0, 0, 1920, 1080), QColor("#1A1F2B"))
+
+        if self.background_id:
+            image = self._load_image(self.background_id)
+            if not image.isNull():
+                factor = min(1920 / image.width(), 1080 / image.height())
+                w, h = image.width() * factor, image.height() * factor
+                painter.drawImage(QRectF((1920 - w) / 2, (1080 - h) / 2, w, h), image)
+
+        defaults = {"left": (480, 1), "center": (960, 2), "right": (1440, 3)}
+        ordered = sorted(
+            self.sprites.items(),
+            key=lambda pair: (
+                (pair[1].get("placement") or {}).get("z", defaults.get(pair[0], (960, 2))[1]),
+                list(defaults).index(pair[0]) if pair[0] in defaults else 1,
+            ),
+        )
+        for slot, sprite in ordered:
+            image = self._load_image(sprite["asset_id"])
+            if image.isNull():
+                continue
+            placement = sprite.get("placement") or {}
+            factor = (864 / image.height()) * placement.get("scale_pct", 100) / 100
+            w, h = image.width() * factor, image.height() * factor
+            x = placement.get("x", defaults.get(slot, (960, 2))[0])
+            y = placement.get("y", 1040)
+            painter.drawImage(QRectF(x - w / 2, y - h, w, h), image)
+
+        if self.dialogue_text or self.speaker:
+            box = QRectF(120, 760, 1680, 260)
+            painter.setBrush(QColor(18, 24, 38, 215))
+            painter.setPen(QPen(QColor(145, 190, 235, 200), 4))
+            painter.drawRoundedRect(box, 18, 18)
+            font = painter.font()
+            font.setPixelSize(38)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("#8BD3FF"))
+            if self.speaker:
+                painter.drawText(QRectF(160, 780, 1600, 56), Qt.AlignmentFlag.AlignLeft, self.speaker)
+            font.setBold(False)
+            font.setPixelSize(34)
+            painter.setFont(font)
+            painter.setPen(QColor("#F4F7FB"))
+            text_y = 845 if self.speaker else 800
+            painter.drawText(
+                QRectF(160, text_y, 1600, 160),
+                Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft,
+                self.dialogue_text,
+            )
+        painter.restore()
+
+        if self.status_hint:
+            hint_rect = QRectF(8, 6, self.width() - 16, 22)
+            painter.setPen(QColor("#9BB0C9"))
+            painter.drawText(hint_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.status_hint)
+
+
+class ConditionDialog(QDialog):
+    """Helper dialog for editing branch conditions with node choices and is/is not/not."""
+
+    def __init__(
+        self,
+        title: str,
+        initial: str,
+        variables: list[dict],
+        choices: list[dict],
+        allow_empty: bool = True,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(520, 260)
+        layout = QVBoxLayout(self)
+        hint = QLabel(
+            "支持：choice is \"选项\"、choice is not \"选项\"、not、and、or、括号、"
+            "变量比较（==, !=, >, >=, <, <=, is, is not）。"
+            + ("单一无选项后继可留空表示自动衔接。" if allow_empty else "")
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.input = QLineEdit(initial)
+        self.input.setPlaceholderText('例如：choice is "左" and not 已结束')
+        layout.addWidget(self.input)
+
+        if choices:
+            choice_row = QHBoxLayout()
+            choice_row.addWidget(QLabel("本节点选项："))
+            for choice in choices:
+                btn_is = QPushButton(f'is "{choice["text"]}"')
+                btn_is.clicked.connect(
+                    lambda _=False, t=choice["text"]: self._insert(f'choice is "{t}"')
+                )
+                choice_row.addWidget(btn_is)
+                btn_not = QPushButton(f'is not "{choice["text"]}"')
+                btn_not.clicked.connect(
+                    lambda _=False, t=choice["text"]: self._insert(f'choice is not "{t}"')
+                )
+                choice_row.addWidget(btn_not)
+            choice_row.addStretch()
+            layout.addLayout(choice_row)
+
+        if variables:
+            var_row = QHBoxLayout()
+            var_row.addWidget(QLabel("变量："))
+            for var in variables[:8]:
+                btn = QPushButton(f"{var['name']} ({var['type']})")
+                snippet = f"{var['name']} is true" if var["type"] == "bool" else f"{var['name']} >= 1"
+                btn.clicked.connect(lambda _=False, s=snippet: self._insert(s))
+                var_row.addWidget(btn)
+            var_row.addStretch()
+            layout.addLayout(var_row)
+
+        op_row = QHBoxLayout()
+        op_row.addWidget(QLabel("逻辑："))
+        for op in ("and", "or", "not", "is", "is not", "(", ")"):
+            btn = QPushButton(op)
+            btn.clicked.connect(lambda _=False, tok=op: self._insert(tok))
+            op_row.addWidget(btn)
+        op_row.addStretch()
+        layout.addLayout(op_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _insert(self, snippet: str):
+        current = self.input.text()
+        sep = " " if current and not current.endswith((" ", "(")) else ""
+        self.input.setText(current + sep + snippet)
+        self.input.setFocus()
+
+    def expression(self) -> str:
+        return self.input.text()
 
 
 class BranchCheckWorker(QThread):
@@ -58,71 +269,6 @@ class BranchCheckWorker(QThread):
             batch_budget_ms=10000,
         )
         self.batch_finished.emit(states, worker_cache.snapshot_pairs())
-
-
-class NodeShape(QGraphicsRectItem):
-    def __init__(
-        self,
-        window: "MakerWindow",
-        node: dict,
-        x: int,
-        y: int,
-        status: str = "pass",
-        is_start: bool = False,
-        is_ending: bool = False,
-        is_unended_leaf: bool = False,
-    ):
-        super().__init__(0, 0, 180, 78)
-        self.window = window
-        self.node = node
-        self.setPos(x, y)
-        border = "#69819A"
-        fill = "#283747"
-        badges: list[str] = []
-        if is_start:
-            border = "#4EA8DE"
-            badges.append("开场")
-        if is_ending:
-            border = "#52B788"
-            badges.append("结局")
-        elif is_unended_leaf:
-            border = "#D4A373"
-            badges.append("未设结局")
-        if status == "conflict":
-            border = "#E05A47"
-            fill = "#4A2525"
-            badges.append("冲突")
-        elif status == "incomplete":
-            border = "#E0A447"
-            fill = "#473A22"
-            badges.append("未完成")
-        elif status in {"pending", "checking"}:
-            badges.append("待检查")
-        self.setBrush(QColor(fill))
-        self.setPen(QPen(QColor(border), 2))
-        self.setFlags(
-            QGraphicsItem.GraphicsItemFlag.ItemIsMovable
-            | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
-            | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
-        )
-        text = node["name"]
-        if badges:
-            text += f"\n[{' · '.join(badges)}]"
-        caption = QGraphicsTextItem(text, self)
-        caption.setDefaultTextColor(QColor("white"))
-        caption.setTextWidth(168)
-        caption.setPos(6, 12)
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        positions = self.window.project.setdefault("editor", {}).setdefault("node_positions", {})
-        positions[self.node["id"]] = {"x": round(self.x()), "y": round(self.y())}
-        self.window.mark_dirty()
-        QTimer.singleShot(0, self.window.draw_graph)
-
-    def mouseDoubleClickEvent(self, event):
-        self.window.select_node(self.node["id"])
-        super().mouseDoubleClickEvent(event)
 
 
 class MakerWindow(QMainWindow):
@@ -184,7 +330,7 @@ class MakerWindow(QMainWindow):
             ("删除节点", self.delete_node),
             ("连接节点", self.connect_nodes),
             ("设为开场", self.set_start),
-            ("设置结局", self.set_ending),
+            ("设为/取消结局", self.set_ending),
             ("片尾视频", self.set_credits_video),
             ("变量管理", self.manage_variables),
             ("检查分支", self.retry_branch_check),
@@ -192,22 +338,44 @@ class MakerWindow(QMainWindow):
             ("调试预览", self.preview_debug),
         ):
             button = QPushButton(label)
+            if label == "设为/取消结局":
+                button.setToolTip("没有后继连接的终点（叶节点）可设为结局；播完演出后自动结束故事")
             button.clicked.connect(handler)
             toolbar.addWidget(button)
         outer.addLayout(toolbar)
         split = QSplitter()
         outer.addWidget(split, 1)
+
+        left_split = QSplitter(Qt.Orientation.Vertical)
+        graph_box = QWidget()
+        graph_layout = QVBoxLayout(graph_box)
+        graph_layout.setContentsMargins(0, 0, 0, 0)
+        graph_tip = QLabel("剧情节点图（空白处拖拽平移、滚轮缩放、从节点右侧橙点拖到目标节点可快捷连线）")
+        graph_layout.addWidget(graph_tip)
         self.scene = QGraphicsScene()
-        self.graph = QGraphicsView(self.scene)
-        split.addWidget(self.graph)
+        self.graph = InteractiveGraphView(self.scene, dark=True)
+        graph_layout.addWidget(self.graph, 1)
+        left_split.addWidget(graph_box)
+
+        preview_box = QWidget()
+        preview_layout = QVBoxLayout(preview_box)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.addWidget(QLabel("实时画面预览（跟随当前节点及所选播放步骤）"))
+        self.live_preview = LiveStagePreview()
+        preview_layout.addWidget(self.live_preview, 1)
+        left_split.addWidget(preview_box)
+        left_split.setSizes([470, 260])
+        split.addWidget(left_split)
+
         side = QWidget()
         side_layout = QVBoxLayout(side)
         side_layout.addWidget(QLabel("剧情节点"))
         self.nodes_list = QListWidget()
         self.nodes_list.currentItemChanged.connect(self.on_node_selected)
         side_layout.addWidget(self.nodes_list)
-        side_layout.addWidget(QLabel("播放顺序"))
+        side_layout.addWidget(QLabel("播放顺序（点击条目可预览对应步骤画面）"))
         self.items_list = QListWidget()
+        self.items_list.currentRowChanged.connect(self.update_live_preview)
         side_layout.addWidget(self.items_list)
         item_actions = QHBoxLayout()
         for label, handler in (
@@ -226,6 +394,10 @@ class MakerWindow(QMainWindow):
             choices.addWidget(button)
         side_layout.addLayout(choices)
         side_layout.addWidget(QLabel("后继连接"))
+        self.leaf_hint = QLabel()
+        self.leaf_hint.setWordWrap(True)
+        self.leaf_hint.setStyleSheet("color: #B7791F; font-size: 11px;")
+        side_layout.addWidget(self.leaf_hint)
         self.edges_list = QListWidget()
         side_layout.addWidget(self.edges_list)
         edge_actions = QHBoxLayout()
@@ -309,6 +481,7 @@ class MakerWindow(QMainWindow):
     def set_project(self, root: Path, project: dict):
         self._stop_branch_worker()
         self.branch_cache.clear()
+        self.live_preview.clear_cache()
         self.root = root
         self.project = project
         self.editor = ProjectEditor(project)
@@ -458,73 +631,149 @@ class MakerWindow(QMainWindow):
 
     def draw_graph(self):
         self.scene.clear()
+        self._node_shapes: dict[str, StoryNodeItem] = {}
         if not self.project:
             return
-        shapes = {}
         positions = self.project.get("editor", {}).get("node_positions", {})
         outgoing_counts = {node["id"]: 0 for node in self.project["nodes"]}
         for edge in self.project["edges"]:
             if edge["from_node_id"] in outgoing_counts:
                 outgoing_counts[edge["from_node_id"]] += 1
+        current = self.current_node()
+        current_id = current["id"] if current else None
         for index, node in enumerate(self.project["nodes"]):
-            point = positions.get(node["id"], {"x": index % 4 * 240, "y": index // 4 * 145})
+            point = positions.get(node["id"], {"x": index % 4 * 280, "y": index // 4 * 155})
             state = self.branch_cache.get_node_state(self.project, node["id"])
             is_start = node["id"] == self.project.get("start_node_id")
             is_ending = node.get("ending") is not None
             is_unended_leaf = (not is_ending) and outgoing_counts.get(node["id"], 0) == 0
-            shape = NodeShape(
+            shape = StoryNodeItem(
                 self, node, point["x"], point["y"],
                 status=state.status,
                 is_start=is_start,
                 is_ending=is_ending,
                 is_unended_leaf=is_unended_leaf,
             )
+            if node["id"] == current_id:
+                shape.setSelected(True)
             self.scene.addItem(shape)
-            shapes[node["id"]] = shape
+            self._node_shapes[node["id"]] = shape
+        nodes_by_id = {n["id"]: n for n in self.project["nodes"]}
         for edge in self.project["edges"]:
-            source = shapes.get(edge["from_node_id"])
-            target = shapes.get(edge["to_node_id"])
+            source = self._node_shapes.get(edge["from_node_id"])
+            target = self._node_shapes.get(edge["to_node_id"])
             if source is None or target is None:
                 continue
-            start = source.scenePos() + QPointF(180, 39)
-            end = target.scenePos() + QPointF(0, 39)
-            line_pen = QPen(QColor("#7DA9C7"), 2)
-            line = self.scene.addLine(start.x(), start.y(), end.x(), end.y(), line_pen)
-            line.setZValue(-1)
-            dx, dy = end.x() - start.x(), end.y() - start.y()
-            distance = math.hypot(dx, dy)
-            if distance > 0:
-                ux, uy = dx / distance, dy / distance
-                base_x, base_y = end.x() - ux * 12, end.y() - uy * 12
-                arrow = QPolygonF([
-                    end,
-                    QPointF(base_x - uy * 6, base_y + ux * 6),
-                    QPointF(base_x + uy * 6, base_y - ux * 6),
-                ])
-                arrow_item = self.scene.addPolygon(arrow, line_pen, QColor("#7DA9C7"))
-                arrow_item.setZValue(-1)
-        self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-40, -40, 40, 40))
+            src_node = nodes_by_id.get(edge["from_node_id"], {})
+            cond = edge.get("condition")
+            if cond is None:
+                label = "自动衔接"
+            else:
+                try:
+                    label = format_condition(cond, self.project["variables"], src_node.get("choices", []))
+                except (KeyError, TypeError, ValueError):
+                    label = "条件失效"
+            src_state = self.branch_cache.get_node_state(self.project, edge["from_node_id"])
+            is_conflict = (
+                src_state.status == "conflict"
+                and src_state.conflict_edges is not None
+                and edge["id"] in src_state.conflict_edges
+            )
+            wire = StoryEdgeItem(source, target, label=label, conflict=is_conflict)
+            self.scene.addItem(wire)
+        bounds = self.scene.itemsBoundingRect().adjusted(-200, -200, 200, 200)
+        if not bounds.isEmpty():
+            self.scene.setSceneRect(bounds)
+
+    def _format_item_label(self, item: dict) -> str:
+        kind = item["type"]
+        prefix = ITEM_TYPE_LABELS.get(kind, kind)
+        assets = {a["id"]: a["name"] for a in self.project["assets"]} if self.project else {}
+        chars = {c["id"]: c["name"] for c in self.project["characters"]} if self.project else {}
+        if kind == "dialogue":
+            speaker = chars.get(item.get("character_id"), "未知角色")
+            return f"{prefix} · {speaker}：{item['text'][:36]}"
+        if kind == "narration":
+            return f"{prefix} · {item['text'][:42]}"
+        if kind == "set_background":
+            aid = item.get("asset_id")
+            return f"{prefix} · {assets.get(aid, '清除背景') if aid else '清除背景'}"
+        if kind == "show_sprite":
+            aid = item.get("asset_id")
+            slot = item.get("slot", "center")
+            return f"{prefix} [{slot}] · {assets.get(aid, '缺失素材')}"
+        if kind == "hide_sprite":
+            return f"{prefix} [{item.get('slot', 'center')}]"
+        if kind in {"play_bgm", "play_sfx"}:
+            aid = item.get("asset_id")
+            return f"{prefix} · {assets.get(aid, '缺失素材')}"
+        return prefix
 
     def on_node_selected(self, current, previous):
+        self.items_list.blockSignals(True)
         self.items_list.clear()
         node = self.current_node()
         if node is None:
+            self.items_list.blockSignals(False)
             self.edges_list.clear()
+            self.leaf_hint.clear()
+            self.live_preview.set_state(self.root, self.project, None, {}, status_hint="未选中节点")
             return
         for item in node["items"]:
-            label = item["type"]
-            if item["type"] in {"dialogue", "narration"}:
-                label += f" · {item['text'][:48]}"
-            elif item.get("asset_id"):
-                label += f" · {item['asset_id']}"
-            row = QListWidgetItem(label)
+            row = QListWidgetItem(self._format_item_label(item))
             row.setData(Qt.ItemDataRole.UserRole, item["id"])
             self.items_list.addItem(row)
         for choice in node.get("choices", []):
             row = QListWidgetItem(f"选项 · {choice['text']}")
             row.setData(Qt.ItemDataRole.UserRole, choice["id"])
             self.items_list.addItem(row)
+        self.items_list.blockSignals(False)
+        if self.items_list.count():
+            self.items_list.setCurrentRow(self.items_list.count() - 1)
+        else:
+            self.update_live_preview()
         self.refresh_edges(node)
+
+    def update_live_preview(self, *_):
+        node = self.current_node()
+        if node is None or self.project is None:
+            self.live_preview.set_state(self.root, self.project, None, {})
+            return
+        items = node["items"]
+        row_idx = self.items_list.currentRow()
+        if row_idx < 0 or row_idx >= len(items):
+            limit = len(items)
+        else:
+            limit = row_idx + 1
+        bg_id = None
+        sprites: dict[str, dict] = {}
+        speaker = ""
+        text = ""
+        chars = {c["id"]: c["name"] for c in self.project["characters"]}
+        for item in items[:limit]:
+            kind = item["type"]
+            if kind == "set_background":
+                bg_id = item.get("asset_id")
+            elif kind == "show_sprite":
+                sprites[item["slot"]] = {
+                    "asset_id": item["asset_id"],
+                    "placement": item.get("placement"),
+                }
+            elif kind == "hide_sprite":
+                sprites.pop(item["slot"], None)
+            elif kind == "dialogue":
+                speaker = chars.get(item.get("character_id"), "")
+                text = item["text"]
+            elif kind == "narration":
+                speaker = ""
+                text = item["text"]
+        hint = f"节点「{node['name']}」· 第 {limit}/{len(items)} 步"
+        if not items:
+            hint = f"节点「{node['name']}」（暂无演出条目）"
+        self.live_preview.set_state(
+            self.root, self.project, bg_id, sprites,
+            speaker=speaker, dialogue_text=text, status_hint=hint,
+        )
 
     def refresh_edges(self, node: dict):
         selected = self.current_edge()
@@ -551,6 +800,14 @@ class MakerWindow(QMainWindow):
             self.edges_list.addItem(row)
             if edge["id"] == selected_id:
                 self.edges_list.setCurrentItem(row)
+        if self.edges_list.count() == 0 and node.get("ending") is None:
+            self.leaf_hint.setText(
+                "提示：此节点暂无后继（终点节点），可点「设为/取消结局」设为结局，或从节点右侧橙点拖线连接下一节点。"
+            )
+        elif node.get("ending") is not None:
+            self.leaf_hint.setText("当前节点已设为结局（播完演出后结束故事或播放片尾）。")
+        else:
+            self.leaf_hint.clear()
 
     def current_edge(self) -> dict | None:
         row = self.edges_list.currentItem()
@@ -575,8 +832,17 @@ class MakerWindow(QMainWindow):
         if node is None:
             return
         duplicate = self.editor.copy_node(node["id"])
+        positions = self.project.setdefault("editor", {}).setdefault("node_positions", {})
+        orig_pos = positions.get(node["id"])
+        if orig_pos is None and hasattr(self, "_node_shapes") and node["id"] in self._node_shapes:
+            shape = self._node_shapes[node["id"]]
+            orig_pos = {"x": round(shape.x()), "y": round(shape.y())}
+        if orig_pos is not None:
+            positions[duplicate["id"]] = {"x": orig_pos["x"] + 250, "y": orig_pos["y"] + 40}
         self.mark_dirty()
         self.refresh_story(duplicate["id"])
+        if hasattr(self, "_node_shapes") and duplicate["id"] in self._node_shapes:
+            self.graph.ensureVisible(self._node_shapes[duplicate["id"]])
 
     def rename_node(self):
         node = self.current_node()
@@ -612,6 +878,45 @@ class MakerWindow(QMainWindow):
         self.refresh_story()
         self.text_panel.refresh()
 
+    def quick_connect_nodes(self, source_id: str, target_id: str):
+        if self.project is None or self.editor is None:
+            return
+        source = self.editor.node(source_id)
+        target = self.editor.node(target_id)
+        if source.get("ending") is not None:
+            QMessageBox.warning(self, "无法连接", "结局节点不能有后继")
+            return
+        dialog = ConditionDialog(
+            f"连接条件：{source['name']} → {target['name']}",
+            "",
+            self.project["variables"],
+            source.get("choices", []),
+            allow_empty=True,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        expression = dialog.expression()
+        try:
+            condition = None
+            if expression.strip():
+                condition = parse_condition(
+                    expression, self.project["variables"], source.get("choices", []),
+                )
+            edge = self.editor.add_edge(source["id"], target["id"], condition)
+        except ValueError as error:
+            QMessageBox.warning(self, "无法连接", str(error))
+            return
+        self.mark_dirty()
+        self.draw_graph()
+        self.select_node(source["id"])
+        self.refresh_edges(source)
+        for index in range(self.edges_list.count()):
+            row = self.edges_list.item(index)
+            if row.data(Qt.ItemDataRole.UserRole) == edge["id"]:
+                self.edges_list.setCurrentItem(row)
+                break
+
     def connect_nodes(self):
         source = self.current_node()
         if source is None:
@@ -627,29 +932,7 @@ class MakerWindow(QMainWindow):
         if not accepted:
             return
         target = targets[labels.index(selected)]
-        expression, accepted = QInputDialog.getText(
-            self, "连接条件", "条件表达式，单一无选项后继可留空",
-        )
-        if not accepted:
-            return
-        try:
-            condition = None
-            if expression.strip():
-                condition = parse_condition(
-                    expression, self.project["variables"], source.get("choices", []),
-                )
-            edge = self.editor.add_edge(source["id"], target["id"], condition)
-        except ValueError as error:
-            QMessageBox.warning(self, "无法连接", str(error))
-            return
-        self.mark_dirty()
-        self.draw_graph()
-        self.refresh_edges(source)
-        for index in range(self.edges_list.count()):
-            row = self.edges_list.item(index)
-            if row.data(Qt.ItemDataRole.UserRole) == edge["id"]:
-                self.edges_list.setCurrentItem(row)
-                break
+        self.quick_connect_nodes(source["id"], target["id"])
 
     def edit_edge_condition(self):
         node = self.current_node()
@@ -964,6 +1247,29 @@ class MakerWindow(QMainWindow):
         assets = [asset for asset in self.project["assets"] if asset["kind"] == kind]
         return [f"{asset['name']} [{asset['id'][:8]}]" for asset in assets], assets
 
+    def _pick_asset(
+        self,
+        required_kind: str,
+        title: str,
+        default_tag: str | None = None,
+        allow_none_label: str | None = None,
+        current_asset_id: str | None = None,
+    ) -> tuple[str | None, bool]:
+        has_any = any(asset["kind"] == required_kind for asset in self.project["assets"])
+        if not has_any and allow_none_label is None:
+            QMessageBox.information(self, "素材", f"请先在素材页导入 {required_kind} 类型的素材")
+            return None, False
+        dialog = AssetPickerDialog(
+            self.project, self.root, required_kind,
+            title=title, default_tag=default_tag,
+            allow_none_label=allow_none_label,
+            current_asset_id=current_asset_id,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None, False
+        return dialog.selected_asset_id, True
+
     def add_item(self):
         node = self.current_node()
         if node is None:
@@ -972,9 +1278,13 @@ class MakerWindow(QMainWindow):
             "dialogue", "narration", "set_background", "show_sprite",
             "hide_sprite", "play_bgm", "stop_bgm", "play_sfx",
         ]
-        kind, accepted = QInputDialog.getItem(self, "添加演出", "类型", kinds, editable=False)
+        kind_labels = [f"{ITEM_TYPE_LABELS[k]} ({k})" for k in kinds]
+        selected_label, accepted = QInputDialog.getItem(
+            self, "添加演出", "类型", kind_labels, editable=False,
+        )
         if not accepted:
             return
+        kind = kinds[kind_labels.index(selected_label)]
         fields = {}
         if kind in {"dialogue", "narration"}:
             text, accepted = QInputDialog.getMultiLineText(self, "文本", "正文")
@@ -997,20 +1307,15 @@ class MakerWindow(QMainWindow):
             required_kind = "image" if kind in {"set_background", "show_sprite"} else (
                 "bgm" if kind == "play_bgm" else "sfx"
             )
-            labels, assets = self._asset_options(required_kind)
-            if kind == "set_background":
-                labels = ["清除背景", *labels]
-            if not labels:
-                QMessageBox.information(self, "素材", "请先导入对应类型的素材")
-                return
-            selected, accepted = QInputDialog.getItem(
-                self, "选择素材", "素材", labels, editable=False,
+            default_tag = "背景" if kind == "set_background" else ("立绘" if kind == "show_sprite" else None)
+            allow_none = "清除背景" if kind == "set_background" else None
+            asset_id, accepted = self._pick_asset(
+                required_kind, f"选择{ITEM_TYPE_LABELS[kind]}素材",
+                default_tag=default_tag, allow_none_label=allow_none,
             )
             if not accepted:
                 return
-            fields["asset_id"] = None if selected == "清除背景" else assets[
-                labels.index(selected) - (1 if kind == "set_background" else 0)
-            ]["id"]
+            fields["asset_id"] = asset_id
             if kind == "play_bgm":
                 loop_choice, accepted = QInputDialog.getItem(
                     self, "循环播放", "模式", ["循环", "单次"], editable=False,
@@ -1048,6 +1353,7 @@ class MakerWindow(QMainWindow):
         self.editor.add_item(node["id"], kind, **fields)
         self.mark_dirty()
         self.on_node_selected(None, None)
+        self.draw_graph()
 
     def edit_item(self):
         node = self.current_node()
@@ -1084,25 +1390,15 @@ class MakerWindow(QMainWindow):
             asset_kind = "image" if kind in {"set_background", "show_sprite"} else (
                 "bgm" if kind == "play_bgm" else "sfx"
             )
-            labels, assets = self._asset_options(asset_kind)
-            if kind == "set_background":
-                labels = ["清除背景", *labels]
-            if not labels:
-                return
-            current_asset_idx = 0
-            if item.get("asset_id") is not None:
-                for idx, asset in enumerate(assets):
-                    if asset["id"] == item["asset_id"]:
-                        current_asset_idx = idx + (1 if kind == "set_background" else 0)
-                        break
-            selected, accepted = QInputDialog.getItem(
-                self, "更换素材", "素材", labels, current_asset_idx, editable=False,
+            default_tag = "背景" if kind == "set_background" else ("立绘" if kind == "show_sprite" else None)
+            allow_none = "清除背景" if kind == "set_background" else None
+            asset_id, accepted = self._pick_asset(
+                asset_kind, f"更换{ITEM_TYPE_LABELS[kind]}素材",
+                default_tag=default_tag, allow_none_label=allow_none,
+                current_asset_id=item.get("asset_id"),
             )
             if not accepted:
                 return
-            asset_id = None if selected == "清除背景" else assets[
-                labels.index(selected) - (1 if kind == "set_background" else 0)
-            ]["id"]
             if kind == "show_sprite":
                 slots = ["left", "center", "right"]
                 slot_idx = slots.index(item["slot"]) if item.get("slot") in slots else 1
