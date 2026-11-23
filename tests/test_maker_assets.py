@@ -74,6 +74,13 @@ class AssetPanelTests(unittest.TestCase):
             self.assertEqual(picker.listing.count(), 1)
             self.assertEqual(picker.current_choice(), bg["id"])
             picker.close()
+            # Audio asset enables built-in media preview controls
+            for idx in range(window.asset_panel.list.count()):
+                row = window.asset_panel.list.item(idx)
+                if row.text().startswith("bgm_theme"):
+                    window.asset_panel.list.setCurrentItem(row)
+                    break
+            self.assertFalse(window.asset_panel.media_controls.isHidden())
             window.dirty = False
             window.close()
 

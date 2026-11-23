@@ -130,6 +130,38 @@ class MakerTests(unittest.TestCase):
             window.dirty = False
             window.close()
 
+    def test_choices_and_local_variables_separated_from_playback_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "中文 项目"
+            project = create_project(root, "节点变量测试")
+            window = MakerWindow()
+            window.set_project(root, project)
+            n1 = window.editor.add_node("分支节点")
+            n2 = window.editor.add_node("其他节点")
+            window.editor.add_item(n1["id"], "narration", text="请选择")
+            n1["choices"].append({"id": new_id(), "text": "同意"})
+            project["variables"].append({
+                "id": new_id(), "name": "全局标记", "type": "bool",
+                "initial_value": False, "scope": "global",
+            })
+            project["variables"].append({
+                "id": new_id(), "name": "本节点计数", "type": "int",
+                "initial_value": 1, "scope": "local", "node_id": n1["id"],
+            })
+            window.refresh_story(n1["id"])
+            # Playback list ONLY contains narration item, NOT choices
+            self.assertEqual(window.items_list.count(), 1)
+            self.assertEqual(window.choices_list.count(), 1)
+            self.assertEqual(window.local_vars_list.count(), 1)
+            self.assertEqual(window.global_vars_list.count(), 1)
+            # Independent preview window tracks choices at final step
+            self.assertEqual(window.live_preview.choices, ["同意"])
+            # Other node sees global variable but not n1's local variable
+            n2_vars = window._available_variables_for_node(n2["id"])
+            self.assertEqual([v["name"] for v in n2_vars], ["全局标记"])
+            window.dirty = False
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

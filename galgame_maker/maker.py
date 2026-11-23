@@ -24,6 +24,7 @@ from .export import export_game
 from .maker_assets import AssetPanel, AssetPickerDialog
 from .maker_characters import CharacterPanel
 from .maker_graph import InteractiveGraphView, StoryEdgeItem, StoryNodeItem
+from .maker_style import MAKER_STYLESHEET
 from .maker_text import TextPanel
 from .maker_theme import ThemePanel
 from .player import PlayerWindow
@@ -54,8 +55,9 @@ class LiveStagePreview(QWidget):
         self.sprites: dict[str, dict] = {}
         self.speaker: str = ""
         self.dialogue_text: str = ""
+        self.choices: list[str] = []
         self.status_hint: str = "选择节点或演出条目即可实时预览画面"
-        self.setMinimumHeight(200)
+        self.setMinimumSize(480, 270)
 
     def clear_cache(self):
         self.images.clear()
@@ -82,6 +84,7 @@ class LiveStagePreview(QWidget):
         speaker: str = "",
         dialogue_text: str = "",
         status_hint: str = "",
+        choices: list[str] | None = None,
     ):
         self.root = root
         self.assets = {a["id"]: a for a in project["assets"]} if project else {}
@@ -89,6 +92,7 @@ class LiveStagePreview(QWidget):
         self.sprites = sprites
         self.speaker = speaker
         self.dialogue_text = dialogue_text
+        self.choices = choices or []
         self.status_hint = status_hint
         self.update()
 
@@ -152,12 +156,50 @@ class LiveStagePreview(QWidget):
                 Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignLeft,
                 self.dialogue_text,
             )
+        if self.choices:
+            font = painter.font()
+            font.setPixelSize(32)
+            painter.setFont(font)
+            total_h = len(self.choices) * 92
+            start_y = max(160.0, (720.0 - total_h) / 2)
+            for idx, choice_text in enumerate(self.choices[:5]):
+                rect = QRectF(560, start_y + idx * 92, 800, 72)
+                painter.setBrush(QColor(32, 48, 74, 225))
+                painter.setPen(QPen(QColor("#67B3E8"), 3))
+                painter.drawRoundedRect(rect, 14, 14)
+                painter.setPen(QColor("#F4F7FB"))
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, choice_text)
         painter.restore()
 
         if self.status_hint:
             hint_rect = QRectF(8, 6, self.width() - 16, 22)
             painter.setPen(QColor("#9BB0C9"))
             painter.drawText(hint_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.status_hint)
+
+
+class LivePreviewWindow(QWidget):
+    """Independent floating window for real-time story stage preview."""
+
+    def __init__(self, maker: "MakerWindow"):
+        super().__init__(maker, Qt.WindowType.Window)
+        self.maker = maker
+        self.setWindowTitle("实时画面预览 · GalGame Maker")
+        self.resize(860, 540)
+        self.setStyleSheet(MAKER_STYLESHEET)
+        layout = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.step_label = QLabel("未选中节点")
+        self.step_label.setProperty("sectionTitle", True)
+        top.addWidget(self.step_label, 1)
+        prev_btn = QPushButton("◀ 上一步")
+        prev_btn.clicked.connect(lambda: self.maker.step_live_preview(-1))
+        top.addWidget(prev_btn)
+        next_btn = QPushButton("下一步 ▶")
+        next_btn.clicked.connect(lambda: self.maker.step_live_preview(1))
+        top.addWidget(next_btn)
+        layout.addLayout(top)
+        self.stage = LiveStagePreview()
+        layout.addWidget(self.stage, 1)
 
 
 class ConditionDialog(QDialog):
@@ -287,7 +329,10 @@ class MakerWindow(QMainWindow):
         self.branch_check_timer.setInterval(300)
         self.branch_check_timer.timeout.connect(self._start_background_branch_check)
         self.setWindowTitle("GalGame Maker")
-        self.resize(1280, 820)
+        self.resize(1360, 860)
+        self.setStyleSheet(MAKER_STYLESHEET)
+        self.live_preview_window = LivePreviewWindow(self)
+        self.live_preview = self.live_preview_window.stage
         self._make_menu()
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
@@ -311,7 +356,8 @@ class MakerWindow(QMainWindow):
             ("新建", self.new_project),
             ("打开", self.open_project),
             ("保存", self.save),
-            ("预览", self.preview),
+            ("实时画面预览窗口", self.open_live_preview),
+            ("运行预览", self.preview),
             ("调试预览", self.preview_debug),
             ("导出游戏", self.export),
         ):
@@ -322,61 +368,71 @@ class MakerWindow(QMainWindow):
     def _make_story_tab(self):
         container = QWidget()
         outer = QVBoxLayout(container)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
         for label, handler in (
             ("新建节点", self.add_node),
-            ("节点改名", self.rename_node),
-            ("复制节点", self.copy_node),
-            ("删除节点", self.delete_node),
+            ("改名", self.rename_node),
+            ("复制", self.copy_node),
+            ("删除", self.delete_node),
             ("连接节点", self.connect_nodes),
             ("设为开场", self.set_start),
             ("设为/取消结局", self.set_ending),
             ("片尾视频", self.set_credits_video),
-            ("变量管理", self.manage_variables),
+            ("全局变量", self.manage_variables),
             ("检查分支", self.retry_branch_check),
-            ("预览", self.preview),
+            ("实时预览窗口", self.open_live_preview),
+            ("运行预览", self.preview),
             ("调试预览", self.preview_debug),
         ):
             button = QPushButton(label)
             if label == "设为/取消结局":
                 button.setToolTip("没有后继连接的终点（叶节点）可设为结局；播完演出后自动结束故事")
+            if label in {"实时预览窗口", "运行预览"}:
+                button.setProperty("accent", True)
             button.clicked.connect(handler)
             toolbar.addWidget(button)
+        toolbar.addStretch()
         outer.addLayout(toolbar)
+
         split = QSplitter()
         outer.addWidget(split, 1)
 
-        left_split = QSplitter(Qt.Orientation.Vertical)
         graph_box = QWidget()
         graph_layout = QVBoxLayout(graph_box)
         graph_layout.setContentsMargins(0, 0, 0, 0)
-        graph_tip = QLabel("剧情节点图（空白处拖拽平移、滚轮缩放、从节点右侧橙点拖到目标节点可快捷连线）")
+        graph_tip = QLabel("剧情节点图（空白处拖拽平移 · 滚轮缩放 · 从节点右侧橙点拖到目标节点快捷连线）")
+        graph_tip.setProperty("sectionTitle", True)
         graph_layout.addWidget(graph_tip)
         self.scene = QGraphicsScene()
         self.graph = InteractiveGraphView(self.scene, dark=True)
         graph_layout.addWidget(self.graph, 1)
-        left_split.addWidget(graph_box)
-
-        preview_box = QWidget()
-        preview_layout = QVBoxLayout(preview_box)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        preview_layout.addWidget(QLabel("实时画面预览（跟随当前节点及所选播放步骤）"))
-        self.live_preview = LiveStagePreview()
-        preview_layout.addWidget(self.live_preview, 1)
-        left_split.addWidget(preview_box)
-        left_split.setSizes([470, 260])
-        split.addWidget(left_split)
+        split.addWidget(graph_box)
 
         side = QWidget()
+        side.setMinimumWidth(360)
         side_layout = QVBoxLayout(side)
-        side_layout.addWidget(QLabel("剧情节点"))
+        side_layout.setContentsMargins(6, 0, 0, 0)
+        nodes_title = QLabel("剧情节点")
+        nodes_title.setProperty("sectionTitle", True)
+        side_layout.addWidget(nodes_title)
         self.nodes_list = QListWidget()
+        self.nodes_list.setMaximumHeight(165)
         self.nodes_list.currentItemChanged.connect(self.on_node_selected)
         side_layout.addWidget(self.nodes_list)
-        side_layout.addWidget(QLabel("播放顺序（点击条目可预览对应步骤画面）"))
+
+        self.inspector_tabs = QTabWidget()
+        side_layout.addWidget(self.inspector_tabs, 1)
+
+        # Tab 1: Playback items only (no choices mixed in)
+        items_tab = QWidget()
+        items_layout = QVBoxLayout(items_tab)
+        items_layout.addWidget(QLabel("点击演出条目可在「实时预览窗口」中查看该步画面"))
         self.items_list = QListWidget()
         self.items_list.currentRowChanged.connect(self.update_live_preview)
-        side_layout.addWidget(self.items_list)
+        items_layout.addWidget(self.items_list, 1)
         item_actions = QHBoxLayout()
         for label, handler in (
             ("添加", self.add_item), ("编辑", self.edit_item),
@@ -386,20 +442,65 @@ class MakerWindow(QMainWindow):
             button = QPushButton(label)
             button.clicked.connect(handler)
             item_actions.addWidget(button)
-        side_layout.addLayout(item_actions)
-        choices = QHBoxLayout()
-        for label, handler in (("添加选项", self.add_choice), ("删除选项", self.remove_choice)):
+        items_layout.addLayout(item_actions)
+        self.inspector_tabs.addTab(items_tab, "播放顺序")
+
+        # Tab 2: Node properties — choices (local choice variable) + node-local variables + globals
+        vars_tab = QWidget()
+        vars_layout = QVBoxLayout(vars_tab)
+        choice_title = QLabel("分支选项（本节点局部 choice 变量）")
+        choice_title.setProperty("sectionTitle", True)
+        vars_layout.addWidget(choice_title)
+        self.choices_list = QListWidget()
+        self.choices_list.setMaximumHeight(130)
+        vars_layout.addWidget(self.choices_list)
+        choice_actions = QHBoxLayout()
+        for label, handler in (
+            ("添加选项", self.add_choice),
+            ("编辑选项", self.edit_choice),
+            ("删除选项", self.remove_choice),
+        ):
             button = QPushButton(label)
             button.clicked.connect(handler)
-            choices.addWidget(button)
-        side_layout.addLayout(choices)
-        side_layout.addWidget(QLabel("后继连接"))
+            choice_actions.addWidget(button)
+        vars_layout.addLayout(choice_actions)
+
+        local_title = QLabel("本节点局部变量")
+        local_title.setProperty("sectionTitle", True)
+        vars_layout.addWidget(local_title)
+        self.local_vars_list = QListWidget()
+        self.local_vars_list.setMaximumHeight(130)
+        vars_layout.addWidget(self.local_vars_list)
+        local_actions = QHBoxLayout()
+        for label, handler in (
+            ("新建局部", self.add_local_variable),
+            ("编辑局部", self.edit_local_variable),
+            ("删除局部", self.delete_local_variable),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            local_actions.addWidget(button)
+        vars_layout.addLayout(local_actions)
+
+        global_title = QLabel("项目全局变量")
+        global_title.setProperty("sectionTitle", True)
+        vars_layout.addWidget(global_title)
+        self.global_vars_list = QListWidget()
+        vars_layout.addWidget(self.global_vars_list, 1)
+        manage_global_btn = QPushButton("管理全部变量（全局 / 局部）")
+        manage_global_btn.clicked.connect(self.manage_variables)
+        vars_layout.addWidget(manage_global_btn)
+        self.inspector_tabs.addTab(vars_tab, "变量与选项")
+
+        # Tab 3: Outgoing edges
+        edges_tab = QWidget()
+        edges_layout = QVBoxLayout(edges_tab)
         self.leaf_hint = QLabel()
         self.leaf_hint.setWordWrap(True)
-        self.leaf_hint.setStyleSheet("color: #B7791F; font-size: 11px;")
-        side_layout.addWidget(self.leaf_hint)
+        self.leaf_hint.setStyleSheet("color: #E0A447; font-size: 12px;")
+        edges_layout.addWidget(self.leaf_hint)
         self.edges_list = QListWidget()
-        side_layout.addWidget(self.edges_list)
+        edges_layout.addWidget(self.edges_list, 1)
         edge_actions = QHBoxLayout()
         for label, handler in (
             ("条件", self.edit_edge_condition),
@@ -410,10 +511,29 @@ class MakerWindow(QMainWindow):
             button = QPushButton(label)
             button.clicked.connect(handler)
             edge_actions.addWidget(button)
-        side_layout.addLayout(edge_actions)
+        edges_layout.addLayout(edge_actions)
+        self.inspector_tabs.addTab(edges_tab, "后继连接")
+
         split.addWidget(side)
-        split.setSizes([850, 360])
+        split.setSizes([900, 420])
         return container
+
+    def open_live_preview(self):
+        self.update_live_preview()
+        self.live_preview_window.show()
+        self.live_preview_window.raise_()
+        self.live_preview_window.activateWindow()
+
+    def step_live_preview(self, delta: int):
+        count = self.items_list.count()
+        if count == 0:
+            return
+        current = self.items_list.currentRow()
+        if current < 0:
+            target = 0 if delta > 0 else count - 1
+        else:
+            target = max(0, min(count - 1, current + delta))
+        self.items_list.setCurrentRow(target)
 
     def update_title(self):
         title = self.project["title"] if self.project else "未打开项目"
@@ -715,29 +835,62 @@ class MakerWindow(QMainWindow):
         node = self.current_node()
         if node is None:
             self.items_list.blockSignals(False)
+            self.choices_list.clear()
+            self.local_vars_list.clear()
+            self.global_vars_list.clear()
             self.edges_list.clear()
             self.leaf_hint.clear()
             self.live_preview.set_state(self.root, self.project, None, {}, status_hint="未选中节点")
+            self.live_preview_window.step_label.setText("未选中节点")
             return
         for item in node["items"]:
             row = QListWidgetItem(self._format_item_label(item))
             row.setData(Qt.ItemDataRole.UserRole, item["id"])
-            self.items_list.addItem(row)
-        for choice in node.get("choices", []):
-            row = QListWidgetItem(f"选项 · {choice['text']}")
-            row.setData(Qt.ItemDataRole.UserRole, choice["id"])
             self.items_list.addItem(row)
         self.items_list.blockSignals(False)
         if self.items_list.count():
             self.items_list.setCurrentRow(self.items_list.count() - 1)
         else:
             self.update_live_preview()
+        self.refresh_node_variables(node)
         self.refresh_edges(node)
+
+    def _available_variables_for_node(self, node_id: str) -> list[dict]:
+        if self.project is None:
+            return []
+        return [
+            var for var in self.project["variables"]
+            if var.get("scope", "global") == "global" or var.get("node_id") == node_id
+        ]
+
+    def refresh_node_variables(self, node: dict | None = None):
+        self.choices_list.clear()
+        self.local_vars_list.clear()
+        self.global_vars_list.clear()
+        if self.project is None:
+            return
+        target = node if node is not None else self.current_node()
+        if target is not None:
+            for choice in target.get("choices", []):
+                row = QListWidgetItem(f"choice is \"{choice['text']}\"")
+                row.setData(Qt.ItemDataRole.UserRole, choice["id"])
+                self.choices_list.addItem(row)
+            for var in self.project["variables"]:
+                if var.get("scope") == "local" and var.get("node_id") == target["id"]:
+                    row = QListWidgetItem(f"{var['name']} ({var['type']}) = {var['initial_value']}")
+                    row.setData(Qt.ItemDataRole.UserRole, var["id"])
+                    self.local_vars_list.addItem(row)
+        for var in self.project["variables"]:
+            if var.get("scope", "global") == "global":
+                row = QListWidgetItem(f"{var['name']} ({var['type']}) = {var['initial_value']}")
+                row.setData(Qt.ItemDataRole.UserRole, var["id"])
+                self.global_vars_list.addItem(row)
 
     def update_live_preview(self, *_):
         node = self.current_node()
         if node is None or self.project is None:
             self.live_preview.set_state(self.root, self.project, None, {})
+            self.live_preview_window.step_label.setText("未选中节点")
             return
         items = node["items"]
         row_idx = self.items_list.currentRow()
@@ -767,12 +920,14 @@ class MakerWindow(QMainWindow):
             elif kind == "narration":
                 speaker = ""
                 text = item["text"]
+        show_choices = [c["text"] for c in node.get("choices", [])] if limit == len(items) else []
         hint = f"节点「{node['name']}」· 第 {limit}/{len(items)} 步"
         if not items:
             hint = f"节点「{node['name']}」（暂无演出条目）"
+        self.live_preview_window.step_label.setText(hint)
         self.live_preview.set_state(
             self.root, self.project, bg_id, sprites,
-            speaker=speaker, dialogue_text=text, status_hint=hint,
+            speaker=speaker, dialogue_text=text, status_hint=hint, choices=show_choices,
         )
 
     def refresh_edges(self, node: dict):
@@ -886,10 +1041,11 @@ class MakerWindow(QMainWindow):
         if source.get("ending") is not None:
             QMessageBox.warning(self, "无法连接", "结局节点不能有后继")
             return
+        available_vars = self._available_variables_for_node(source["id"])
         dialog = ConditionDialog(
             f"连接条件：{source['name']} → {target['name']}",
             "",
-            self.project["variables"],
+            available_vars,
             source.get("choices", []),
             allow_empty=True,
             parent=self,
@@ -901,7 +1057,7 @@ class MakerWindow(QMainWindow):
             condition = None
             if expression.strip():
                 condition = parse_condition(
-                    expression, self.project["variables"], source.get("choices", []),
+                    expression, available_vars, source.get("choices", []),
                 )
             edge = self.editor.add_edge(source["id"], target["id"], condition)
         except ValueError as error:
@@ -1088,9 +1244,15 @@ class MakerWindow(QMainWindow):
 
         def reload_list():
             listing.clear()
+            node_names = {n["id"]: n["name"] for n in self.project["nodes"]}
             for var in self.project["variables"]:
+                scope = var.get("scope", "global")
+                tag = (
+                    f"[局部 · {node_names.get(var.get('node_id'), '未知节点')}]"
+                    if scope == "local" else "[全局]"
+                )
                 row = QListWidgetItem(
-                    f"{var['name']} ({var['type']}) = {var['initial_value']}"
+                    f"{tag} {var['name']} ({var['type']}) = {var['initial_value']}"
                 )
                 row.setData(Qt.ItemDataRole.UserRole, var["id"])
                 listing.addItem(row)
@@ -1164,6 +1326,7 @@ class MakerWindow(QMainWindow):
                 return
             self.project["variables"].remove(var)
             self.mark_dirty()
+            self.refresh_node_variables()
             reload_list()
 
         buttons = QHBoxLayout()
@@ -1203,9 +1366,108 @@ class MakerWindow(QMainWindow):
         if accepted:
             from .project import new_id
             self.project["variables"].append({
-                "id": new_id(), "name": name.strip(), "type": kind, "initial_value": value,
+                "id": new_id(), "name": name.strip(), "type": kind,
+                "initial_value": value, "scope": "global",
             })
             self.mark_dirty()
+            self.refresh_node_variables()
+
+    def add_local_variable(self):
+        node = self.current_node()
+        if node is None:
+            return
+        name, accepted = QInputDialog.getText(self, "新建节点局部变量", "变量名称")
+        if not accepted or not name.strip():
+            return
+        cleaned = name.strip()
+        if not cleaned.isidentifier() or cleaned in {"choice", "true", "false"}:
+            QMessageBox.warning(self, "局部变量", "变量名须是可用于条件表达式的标识符")
+            return
+        if any(v["name"] == cleaned for v in self.project["variables"]):
+            QMessageBox.warning(self, "局部变量", "变量名称已存在")
+            return
+        kind, accepted = QInputDialog.getItem(self, "变量类型", "类型", ["int", "bool"], editable=False)
+        if not accepted:
+            return
+        if kind == "int":
+            value, accepted = self.integer_input("初始值", cleaned)
+        else:
+            selected, accepted = QInputDialog.getItem(
+                self, "初始值", cleaned, ["false", "true"], editable=False,
+            )
+            value = selected == "true"
+        if accepted:
+            from .project import new_id
+            self.project["variables"].append({
+                "id": new_id(), "name": cleaned, "type": kind,
+                "initial_value": value, "scope": "local", "node_id": node["id"],
+            })
+            self.mark_dirty()
+            self.refresh_node_variables(node)
+
+    def edit_local_variable(self):
+        node = self.current_node()
+        row = self.local_vars_list.currentItem()
+        if node is None or row is None:
+            return
+        vid = row.data(Qt.ItemDataRole.UserRole)
+        var = next((v for v in self.project["variables"] if v["id"] == vid), None)
+        if var is None:
+            return
+        name, accepted = QInputDialog.getText(self, "编辑局部变量", "名称", text=var["name"])
+        if not accepted or not name.strip():
+            return
+        cleaned = name.strip()
+        if not cleaned.isidentifier() or cleaned in {"choice", "true", "false"}:
+            QMessageBox.warning(self, "局部变量", "变量名须是可用于条件表达式的标识符")
+            return
+        if any(v["name"] == cleaned and v["id"] != var["id"] for v in self.project["variables"]):
+            QMessageBox.warning(self, "局部变量", "变量名称已存在")
+            return
+        if var["type"] == "int":
+            raw, accepted = QInputDialog.getText(self, "初始值", cleaned, text=str(var["initial_value"]))
+            if not accepted:
+                return
+            try:
+                value: int | bool = int(raw)
+            except ValueError:
+                QMessageBox.warning(self, "初始值", "请输入整数")
+                return
+        else:
+            selected, accepted = QInputDialog.getItem(
+                self, "初始值", cleaned, ["false", "true"],
+                1 if var["initial_value"] else 0, editable=False,
+            )
+            if not accepted:
+                return
+            value = selected == "true"
+        var["name"] = cleaned
+        var["initial_value"] = value
+        self.mark_dirty()
+        self.refresh_node_variables(node)
+        self.refresh_edges(node)
+
+    def delete_local_variable(self):
+        node = self.current_node()
+        row = self.local_vars_list.currentItem()
+        if node is None or row is None:
+            return
+        vid = row.data(Qt.ItemDataRole.UserRole)
+        var = next((v for v in self.project["variables"] if v["id"] == vid), None)
+        if var is None:
+            return
+        refs: list[str] = []
+        for edge in self.project["edges"]:
+            if vid in referenced_variable_ids(edge.get("condition")):
+                refs.append("连接条件")
+            if any(eff.get("variable_id") == vid for eff in edge.get("effects", [])):
+                refs.append("连接变量变化")
+        if refs:
+            QMessageBox.warning(self, "变量仍在使用", "该局部变量正被以下位置引用：\n" + "\n".join(set(refs)))
+            return
+        self.project["variables"].remove(var)
+        self.mark_dirty()
+        self.refresh_node_variables(node)
 
     def integer_input(self, title: str, prompt: str) -> tuple[int, bool]:
         raw, accepted = QInputDialog.getText(self, title, prompt, text="0")
@@ -1229,11 +1491,31 @@ class MakerWindow(QMainWindow):
             from .project import new_id
             node.setdefault("choices", []).append({"id": new_id(), "text": text.strip()})
             self.mark_dirty()
-            self.on_node_selected(None, None)
+            self.refresh_node_variables(node)
+            self.draw_graph()
+            self.update_live_preview()
+
+    def edit_choice(self):
+        node = self.current_node()
+        row = self.choices_list.currentItem()
+        if node is None or row is None:
+            return
+        choice_id = row.data(Qt.ItemDataRole.UserRole)
+        choice = next((c for c in node.get("choices", []) if c["id"] == choice_id), None)
+        if choice is None:
+            return
+        text, accepted = QInputDialog.getText(self, "编辑选项", "选项文字", text=choice["text"])
+        if accepted and text.strip():
+            choice["text"] = text.strip()
+            self.mark_dirty()
+            self.refresh_node_variables(node)
+            self.refresh_edges(node)
+            self.draw_graph()
+            self.update_live_preview()
 
     def remove_choice(self):
         node = self.current_node()
-        row = self.items_list.currentItem()
+        row = self.choices_list.currentItem()
         if node is None or row is None:
             return
         choice_id = row.data(Qt.ItemDataRole.UserRole)
@@ -1241,7 +1523,9 @@ class MakerWindow(QMainWindow):
         node["choices"] = [choice for choice in choices if choice["id"] != choice_id]
         if len(node["choices"]) != len(choices):
             self.mark_dirty()
-            self.on_node_selected(None, None)
+            self.refresh_node_variables(node)
+            self.draw_graph()
+            self.update_live_preview()
 
     def _asset_options(self, kind: str) -> tuple[list[str], list[dict]]:
         assets = [asset for asset in self.project["assets"] if asset["kind"] == kind]
@@ -1571,6 +1855,7 @@ class MakerWindow(QMainWindow):
     def closeEvent(self, event):
         if self._change_project():
             self._stop_branch_worker()
+            self.live_preview_window.close()
             event.accept()
         else:
             event.ignore()

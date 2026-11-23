@@ -124,12 +124,34 @@ class ThemedButton(QPushButton):
         super().__init__(text)
         self.theme_style = game["theme"][part]
         self.image = _theme_image(game, root, part)
-        self.setMinimumHeight(36)
+        self.setMinimumHeight(40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hovered = False
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        _paint_theme(painter, QRectF(self.rect()), self.theme_style, self.image)
-        painter.setPen(QColor(self.theme_style["text_color"]))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        bounds = QRectF(self.rect())
+        _paint_theme(painter, bounds, self.theme_style, self.image)
+        if self._hovered and self.isEnabled():
+            painter.fillRect(bounds, QColor(255, 255, 255, 28))
+        border = QColor("#67B3E8") if self._hovered else QColor(255, 255, 255, 70)
+        painter.setPen(border)
+        painter.drawRect(bounds.adjusted(0.5, 0.5, -0.5, -0.5))
+        color = QColor(self.theme_style["text_color"])
+        if not self.isEnabled():
+            color.setAlpha(110)
+        painter.setPen(color)
         font = painter.font()
         font.setPixelSize(self.theme_style["font_size_px"])
         painter.setFont(font)
@@ -152,64 +174,106 @@ class PlayerWindow(QMainWindow):
         self.initial_variables = initial_variables
         self.engine: StoryEngine | None = None
         self.setWindowTitle(game["title"])
-        self.resize(1100, 720)
+        self.resize(1200, 720)
         self.assets = {asset["id"]: asset for asset in game["assets"]}
         self.characters = {character["id"]: character["name"] for character in game["characters"]}
         self.pages = QStackedWidget()
         self.setCentralWidget(self.pages)
 
         title = QWidget()
+        title.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            "stop:0 #111625, stop:0.6 #1B2438, stop:1 #0E121D);"
+        )
         title_layout = QVBoxLayout(title)
-        title_layout.addStretch()
+        title_layout.setSpacing(16)
+        title_layout.addStretch(2)
         heading = QLabel(game["title"])
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        heading.setStyleSheet("font-size: 38px;")
+        heading.setStyleSheet(
+            "font-size: 46px; font-weight: bold; color: #F4F7FB; background: transparent; padding-bottom: 18px;"
+        )
         title_layout.addWidget(heading)
         for label, action in (
             ("开始游戏", self.start_new_game),
             ("读取存档", self.show_title_load),
             ("退出", self.close),
         ):
+            row = QHBoxLayout()
+            row.addStretch()
             button = ThemedButton(label, game, root, "menu")
+            button.setFixedWidth(300)
+            button.setMinimumHeight(46)
             button.clicked.connect(action)
-            title_layout.addWidget(button)
-        title_layout.addStretch()
+            row.addWidget(button)
+            row.addStretch()
+            title_layout.addLayout(row)
+        title_layout.addStretch(3)
         self.pages.addWidget(title)
 
         story = QWidget()
         story_layout = QVBoxLayout(story)
+        story_layout.setContentsMargins(0, 0, 0, 0)
+        story_layout.setSpacing(0)
         self.stage = Stage(game, root)
         self.stage.clicked.connect(self.advance)
         story_layout.addWidget(self.stage, 1)
+
+        # Visual-novel overlay directly on top of the full-window 16:9 Stage
+        overlay = QVBoxLayout(self.stage)
+        overlay.setContentsMargins(36, 24, 36, 20)
+        overlay.setSpacing(12)
+        overlay.addStretch(3)
+
+        self.choice_area = QWidget()
+        self.choice_area.setStyleSheet("background: transparent;")
+        self.choice_area.setMaximumWidth(720)
+        self.choice_layout = QVBoxLayout(self.choice_area)
+        self.choice_layout.setSpacing(10)
+        choice_row = QHBoxLayout()
+        choice_row.addStretch()
+        choice_row.addWidget(self.choice_area, 1)
+        choice_row.addStretch()
+        overlay.addLayout(choice_row)
+        overlay.addStretch(1)
+
         self.dialogue_panel = ThemedFrame(game, root, "dialogue")
         self.dialogue_panel.clicked.connect(self.advance)
+        self.dialogue_panel.setMinimumHeight(185)
         dialogue_layout = QVBoxLayout(self.dialogue_panel)
+        dialogue_layout.setContentsMargins(24, 16, 24, 12)
+        dialogue_layout.setSpacing(6)
         self.speaker = QLabel()
         self.speaker.setTextFormat(Qt.TextFormat.PlainText)
         dialogue_layout.addWidget(self.speaker)
         self.text = QLabel()
         self.text.setTextFormat(Qt.TextFormat.PlainText)
         self.text.setWordWrap(True)
-        self.text.setMinimumHeight(100)
-        dialogue_layout.addWidget(self.text)
-        story_layout.addWidget(self.dialogue_panel)
-        self.choice_area = QWidget()
-        self.choice_layout = QVBoxLayout(self.choice_area)
-        story_layout.addWidget(self.choice_area)
+        self.text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.text.setMinimumHeight(86)
+        dialogue_layout.addWidget(self.text, 1)
+
         actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addStretch()
         self.advance_button = ThemedButton("继续", game, root, "menu")
+        self.advance_button.setFixedSize(92, 32)
         self.advance_button.clicked.connect(self.advance)
         actions.addWidget(self.advance_button)
         self.save_button = ThemedButton("保存", game, root, "menu")
+        self.save_button.setFixedSize(82, 32)
         self.save_button.clicked.connect(self.show_save_menu)
         actions.addWidget(self.save_button)
         load_button = ThemedButton("读取", game, root, "menu")
+        load_button.setFixedSize(82, 32)
         load_button.clicked.connect(self.show_load_menu)
         actions.addWidget(load_button)
         title_button = ThemedButton("返回标题", game, root, "menu")
+        title_button.setFixedSize(112, 32)
         title_button.clicked.connect(self.return_to_title)
         actions.addWidget(title_button)
-        story_layout.addLayout(actions)
+        dialogue_layout.addLayout(actions)
+        overlay.addWidget(self.dialogue_panel)
         self.pages.addWidget(story)
 
         self.video = QVideoWidget()
@@ -362,12 +426,16 @@ class PlayerWindow(QMainWindow):
             else:
                 self.text.setText("")
         if phase in {"waiting_choice", "stalled"}:
-            for choice in self.engine.nodes[self.engine.node_id].get("choices", []):
+            choices = self.engine.nodes[self.engine.node_id].get("choices", [])
+            for choice in choices:
                 button = ThemedButton(choice["text"], self.game, self.root, "choice")
                 button.clicked.connect(
                     lambda checked=False, selected=choice["id"]: self.choose(selected)
                 )
                 self.choice_layout.addWidget(button)
+            self.choice_area.setVisible(bool(choices))
+        else:
+            self.choice_area.hide()
         if phase == "finished":
             self.text.setText("故事结束，可返回标题")
 
