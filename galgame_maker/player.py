@@ -11,13 +11,14 @@ from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
 from .engine import StoryEngine, StoryError
 from .project import resolve_asset_path
-from .saves import list_save_slots, load_game, save_game
+from .saves import AUTO_SLOT, SaveSlot, list_save_slots, load_game, save_game
 from .text_pages import grapheme_ends
 
 
@@ -166,12 +167,15 @@ class PlayerWindow(QMainWindow):
         start_node_id: str | None = None,
         initial_variables: dict[str, int | bool] | None = None,
         auto_start: bool = False,
+        *,
+        autosave: bool = True,
     ):
         super().__init__()
         self.game = game
         self.root = root
         self.start_node_id = start_node_id
         self.initial_variables = initial_variables
+        self.autosave = autosave
         self.engine: StoryEngine | None = None
         self.setWindowTitle(game["title"])
         self.resize(1200, 720)
@@ -256,6 +260,17 @@ class PlayerWindow(QMainWindow):
         actions = QHBoxLayout()
         actions.setSpacing(8)
         actions.addStretch()
+        self.mode_buttons = {}
+        for mode, label in (("auto", "自动"), ("skip", "快进")):
+            button = ThemedButton(label, game, root, "menu")
+            button.setFixedSize(92, 32)
+            button.clicked.connect(lambda checked=False, selected=mode: self.toggle_mode(selected))
+            self.mode_buttons[mode] = button
+            actions.addWidget(button)
+        backlog_button = ThemedButton("回看", game, root, "menu")
+        backlog_button.setFixedSize(82, 32)
+        backlog_button.clicked.connect(self.show_backlog)
+        actions.addWidget(backlog_button)
         self.advance_button = ThemedButton("继续", game, root, "menu")
         self.advance_button.setFixedSize(92, 32)
         self.advance_button.clicked.connect(self.advance)
@@ -284,6 +299,7 @@ class PlayerWindow(QMainWindow):
         bgm_output = QAudioOutput(self.bgm)
         self.bgm.setAudioOutput(bgm_output)
         self.bgm.errorOccurred.connect(self.bgm_error)
+        self.voice: QMediaPlayer | None = None
         self.credits = QMediaPlayer(self)
         credits_output = QAudioOutput(self.credits)
         self.credits.setAudioOutput(credits_output)
@@ -294,6 +310,10 @@ class PlayerWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setInterval(30)
         self.timer.timeout.connect(self.reveal_character)
+        self.mode = None
+        self.mode_timer = QTimer(self)
+        self.mode_timer.setSingleShot(True)
+        self.mode_timer.timeout.connect(self.timed_advance)
         self.revealed = 0
         self.current_text = ""
         self.apply_theme()
@@ -337,10 +357,7 @@ class PlayerWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def start_new_game(self):
-        self.bgm.stop()
-        self.credits.stop()
-        self.current_bgm_asset_id = None
-        self.current_credits_asset_id = None
+        self.stop_session_media()
         self.engine = StoryEngine(
             self.game,
             start_node_id=self.start_node_id,
@@ -348,40 +365,132 @@ class PlayerWindow(QMainWindow):
         )
         self.pages.setCurrentIndex(1)
         self.refresh()
+        self.write_autosave()
 
     def return_to_title(self):
+        self.stop_session_media()
+        self.pages.setCurrentIndex(0)
+
+    def stop_session_media(self):
+        self.set_mode(None)
         self.timer.stop()
-        self.bgm.stop()
-        self.credits.stop()
+        for player in (self.bgm, self.voice, self.credits):
+            if player is not None:
+                player.stop()
+                if not player.source().isEmpty():
+                    player.setSource(QUrl())
         self.current_bgm_asset_id = None
         self.current_credits_asset_id = None
         for effect in self.effects:
             effect.stop()
             effect.deleteLater()
         self.effects.clear()
-        self.pages.setCurrentIndex(0)
+
+    def closeEvent(self, event):
+        self.stop_session_media()
+        super().closeEvent(event)
 
     def _action(self, operation, reveal_immediately: bool = False):
         try:
             operation()
             self.refresh(reveal_immediately=reveal_immediately)
         except (OSError, ValueError, KeyError) as error:
+            self.set_mode(None)
             QMessageBox.warning(self, "无法继续", str(error))
+
+    def _story_action(self, operation, *, checkpoint=False):
+        before = (self.engine.node_id, self.engine.phase)
+        operation()
+        after = (self.engine.node_id, self.engine.phase)
+        if after != before or checkpoint:
+            self.write_autosave()
+
+    def write_autosave(self):
+        if not self.autosave or self.engine.phase not in {"waiting_advance", "waiting_choice", "stalled"}:
+            return
+        try:
+            save_game(self.engine, self.game, AUTO_SLOT)
+        except (OSError, ValueError, KeyError) as error:
+            self.statusBar().showMessage(f"自动存档失败：{error}", 5000)
 
     def advance(self):
         if self.engine is None or self.engine.phase != "waiting_advance":
             return
+        self.set_mode(None)
         clusters = grapheme_ends(self.current_text)
         if self.revealed < len(clusters):
             self.revealed = len(clusters)
             self.timer.stop()
             self.text.setText(self.current_text)
             return
+        self.advance_page()
+
+    def advance_page(self):
         capacity = self.dialogue_page_capacity()
-        self._action(lambda: self.engine.advance(max_chars=capacity))
+        self._action(
+            lambda: self._story_action(lambda: self.engine.advance(max_chars=capacity)),
+            reveal_immediately=self.mode is not None,
+        )
 
     def choose(self, choice_id: str):
-        self._action(lambda: self.engine.select(choice_id))
+        self._action(lambda: self._story_action(lambda: self.engine.select(choice_id), checkpoint=True))
+
+    def set_mode(self, mode):
+        self.mode_timer.stop()
+        self.mode = mode
+        for name, label in (("auto", "自动"), ("skip", "快进")):
+            self.mode_buttons[name].setText(f"{label}中" if name == mode else label)
+
+    def toggle_mode(self, mode):
+        if self.engine is None or self.engine.phase != "waiting_advance":
+            return
+        self.set_mode(None if self.mode == mode else mode)
+        if self.mode == "skip" and self.voice is not None:
+            self.voice.stop()
+        if self.mode:
+            self.refresh(reveal_immediately=True)
+
+    def schedule_advance(self):
+        if self.mode == "skip":
+            self.mode_timer.start(75)
+        elif self.mode == "auto":
+            self.mode_timer.start(min(6500, 1200 + 65 * len(self.current_text)))
+
+    def timed_advance(self):
+        if self.mode is None or self.engine.phase != "waiting_advance":
+            return
+        if (
+            self.mode == "auto" and self.voice is not None
+            and self.voice.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        ):
+            self.mode_timer.start(100)
+            return
+        self.advance_page()
+
+    def show_backlog(self):
+        if self.engine is None:
+            return
+        self.set_mode(None)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("剧情回看")
+        dialog.resize(620, 480)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        paragraphs = []
+        for entry in self.engine.history:
+            item = self.engine.history_item(entry)
+            speaker = self.characters.get(item.get("character_id"))
+            if "choice_id" in entry:
+                speaker = "已选"
+            paragraphs.append(f"{speaker}：{item['text']}" if speaker else item["text"])
+        text.setPlainText("\n\n".join(paragraphs) or "暂无记录")
+        text.verticalScrollBar().setValue(text.verticalScrollBar().maximum())
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def reveal_character(self):
         boundaries = grapheme_ends(self.current_text)
@@ -404,6 +513,11 @@ class PlayerWindow(QMainWindow):
                 item.widget().deleteLater()
         phase = self.engine.phase
         self.timer.stop()
+        self.mode_timer.stop()
+        if phase != "waiting_advance":
+            self.set_mode(None)
+        for button in self.mode_buttons.values():
+            button.setEnabled(phase == "waiting_advance")
         self.advance_button.setEnabled(phase == "waiting_advance")
         self.save_button.setEnabled(phase in {"waiting_advance", "waiting_choice", "stalled"})
         if phase == "waiting_advance":
@@ -438,6 +552,7 @@ class PlayerWindow(QMainWindow):
             self.choice_area.hide()
         if phase == "finished":
             self.text.setText("故事结束，可返回标题")
+        self.schedule_advance()
 
     def _asset_label(self, asset_id: str | None) -> str:
         if asset_id and asset_id in self.assets:
@@ -458,6 +573,17 @@ class PlayerWindow(QMainWindow):
             elif kind == "stop_bgm":
                 self.current_bgm_asset_id = None
                 self.bgm.stop()
+            elif kind == "play_voice":
+                if self.mode != "skip":
+                    if self.voice is None:
+                        self.voice = QMediaPlayer(self)
+                        self.voice.setAudioOutput(QAudioOutput(self.voice))
+                        self.voice.errorOccurred.connect(self.voice_error)
+                    self.voice.setSource(self.asset_url(command["asset_id"]))
+                    self.voice.play()
+            elif kind == "stop_voice":
+                if self.voice is not None:
+                    self.voice.stop()
             elif kind == "play_sfx":
                 asset_id = command["asset_id"]
                 effect = QMediaPlayer(self)
@@ -499,6 +625,9 @@ class PlayerWindow(QMainWindow):
             f"素材：{self._asset_label(asset_id)}\n{detail}",
         )
 
+    def voice_error(self, error, detail):
+        self.statusBar().showMessage(f"角色语音播放失败：{detail}", 5000)
+
     def video_status_changed(self, status):
         if status == QMediaPlayer.MediaStatus.EndOfMedia and self.engine:
             if self.engine.phase == "playing_credits":
@@ -517,29 +646,30 @@ class PlayerWindow(QMainWindow):
             self.refresh()
 
     def _slot_label(self, info: dict) -> str:
+        label = "自动存档" if info["slot"] == AUTO_SLOT else f"档位 {info['slot']}"
         if not info["exists"]:
-            return f"档位 {info['slot']} · 空"
+            return f"{label} · 空"
         if not info["compatible"]:
-            return f"档位 {info['slot']} · {info['error'] or '无法读取'}"
+            return f"{label} · {info['error'] or '无法读取'}"
         node_name = info["node_name"] or "未知节点"
         saved_at = (info["saved_at"] or "")[:19].replace("T", " ")
-        return f"档位 {info['slot']} · {node_name} · {saved_at}"
+        return f"{label} · {node_name} · {saved_at}"
 
     def show_save_menu(self):
+        self.set_mode(None)
         menu = QMenu(self)
         for info in list_save_slots(self.game):
             slot = info["slot"]
             menu.addAction(
                 self._slot_label(info),
-                lambda checked=False, selected=slot: self._action(
-                    lambda: save_game(self.engine, self.game, selected)
-                ),
+                lambda checked=False, selected=slot: self.save_slot(selected),
             )
         menu.exec(self.save_button.mapToGlobal(self.save_button.rect().bottomLeft()))
 
     def show_load_menu(self):
+        self.set_mode(None)
         menu = QMenu(self)
-        for info in list_save_slots(self.game):
+        for info in list_save_slots(self.game, include_auto=self.autosave):
             slot = info["slot"]
             action = menu.addAction(
                 self._slot_label(info),
@@ -553,10 +683,15 @@ class PlayerWindow(QMainWindow):
     def show_title_load(self):
         self.show_load_menu()
 
-    def load_slot(self, slot: int):
-        self.bgm.stop()
-        self.credits.stop()
+    def save_slot(self, slot: SaveSlot):
+        try:
+            save_game(self.engine, self.game, slot)
+        except (OSError, ValueError, KeyError) as error:
+            QMessageBox.warning(self, "无法保存", str(error))
+
+    def load_slot(self, slot: SaveSlot):
         replacement = load_game(self.game, slot)
+        self.stop_session_media()
         self.engine = replacement
         self.pages.setCurrentIndex(1)
 

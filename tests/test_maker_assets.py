@@ -39,6 +39,35 @@ class AssetPanelTests(unittest.TestCase):
             self.assertEqual(window.asset_panel.list.count(), 0)
             window.close()
 
+    def test_music_picker_separates_categories_and_preserves_reclassified_asset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "项目"
+            project = create_project(root, "测试")
+            source = Path(folder) / "music.mp3"
+            source.write_bytes(b"synthetic audio")
+            bgm = import_asset(root, project, source, "bgm", "背景曲")
+            song = import_asset(root, project, source, "song", "有歌词的歌曲")
+            window = MakerWindow()
+            window.set_project(root, project)
+            try:
+                picker = AssetPickerDialog(project, root, "bgm", current_asset_id=bgm["id"])
+                self.assertEqual(picker.listing.count(), 1)
+                self.assertEqual(picker.current_choice(), bgm["id"])
+                picker.category.setCurrentIndex(picker.category.findData("song"))
+                self.assertEqual(picker.listing.count(), 1)
+                self.assertEqual(picker.current_choice(), song["id"])
+                picker.close()
+
+                window.asset_panel.select_asset(bgm["id"], "bgm")
+                with patch("galgame_maker.maker_assets.QInputDialog.getItem", return_value=("人声歌曲", True)):
+                    window.asset_panel.edit_music_kind()
+                self.assertEqual(bgm["kind"], "song")
+                self.assertEqual(window.asset_panel.selected_asset()["id"], bgm["id"])
+                self.assertEqual(window.asset_panel.list.count(), 2)
+            finally:
+                window.dirty = False
+                window.close()
+
     def test_batch_import_and_category_picker_filters_by_kind(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "中文 项目"

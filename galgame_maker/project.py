@@ -13,7 +13,9 @@ from typing import Any
 
 
 PROJECT_VERSION = 1
-ASSET_KINDS = {"image", "text", "bgm", "sfx", "video"}
+MUSIC_KINDS = ("bgm", "song")
+ASSET_KINDS = {"image", "text", "sfx", "voice", "video", *MUSIC_KINDS}
+SPRITE_DIMENSIONS = {"expression": "神态", "outfit": "服装", "action": "动作"}
 ROOT_REQUIRED = {
     "schema_version", "project_id", "title", "start_node_id",
     "nodes", "edges", "variables", "assets", "characters",
@@ -112,10 +114,11 @@ def validate_project(data: Any, directory: Path | str) -> None:
                 raise ProjectFormatError(f"duplicate entity ID at {location}")
             seen_ids.add(record["id"])
 
+    character_ids = {character["id"] for character in data["characters"]}
     for index, asset in enumerate(data["assets"]):
         location = f"assets[{index}]"
         required = {"id", "name", "kind", "path", "sha256"}
-        if required - asset.keys() or asset.keys() - required - {"tags"}:
+        if required - asset.keys() or asset.keys() - required - {"tags", "sprite_variant"}:
             raise ProjectFormatError(f"{location} has missing or unknown fields")
         if not isinstance(asset["name"], str) or not asset["name"].strip():
             raise ProjectFormatError(f"{location}.name must be nonempty")
@@ -128,6 +131,15 @@ def validate_project(data: Any, directory: Path | str) -> None:
         ):
             raise ProjectFormatError(f"{location}.tags must be strings")
         resolve_asset_path(directory, asset["path"])
+        if "sprite_variant" in asset:
+            variant = asset["sprite_variant"]
+            if (
+                asset["kind"] != "image" or not isinstance(variant, dict)
+                or set(variant) != {"character_id", *SPRITE_DIMENSIONS}
+                or not all(isinstance(value, str) for value in variant.values())
+                or variant["character_id"] not in character_ids
+            ):
+                raise ProjectFormatError(f"{location}.sprite_variant is invalid")
 
 
 def _atomic_json(path: Path, data: dict[str, Any]) -> None:

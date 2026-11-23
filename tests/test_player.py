@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,7 +10,7 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
 from galgame_maker.player import PlayerWindow, ThemedFrame
-from galgame_maker.saves import list_save_slots, save_game
+from galgame_maker.saves import AUTO_SLOT, list_save_slots, load_game, save_game
 
 
 def game():
@@ -42,7 +43,7 @@ class PlayerTests(unittest.TestCase):
 
     def test_title_story_and_advance(self):
         with tempfile.TemporaryDirectory() as folder:
-            window = PlayerWindow(game(), Path(folder))
+            window = PlayerWindow(game(), Path(folder), autosave=False)
             window.start_new_game()
             self.assertEqual(window.engine.phase, "waiting_advance")
             self.assertEqual(window.pages.currentIndex(), 1)
@@ -53,6 +54,43 @@ class PlayerTests(unittest.TestCase):
             window.return_to_title()
             self.assertEqual(window.pages.currentIndex(), 0)
             window.close()
+
+    def test_playback_modes_stop_at_choice_and_autosave_follows_branch(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"LOCALAPPDATA": folder}):
+            root = Path(folder)
+            data = game()
+            data["save_compatibility_id"] = "compat-1"
+            node = data["nodes"][0]
+            ending = node.pop("ending")
+            node["choices"] = [{"id": "yes", "text": "继续"}]
+            data["nodes"].append({
+                "id": "next", "items": [{"id": "line2", "type": "narration", "text": "结局"}],
+                "ending": ending,
+            })
+            data["edges"] = [{
+                "id": "edge", "from_node_id": "start", "to_node_id": "next",
+                "condition": {"kind": "choice", "op": "eq", "choice_id": "yes"},
+            }]
+            for mode in ("auto", "skip"):
+                with self.subTest(mode=mode):
+                    window = PlayerWindow(data, root)
+                    try:
+                        window.start_new_game()
+                        save_game(window.engine, data, 1, root)
+                        window.toggle_mode(mode)
+                        self.assertTrue(window.mode_timer.isActive())
+                        window.timed_advance()
+                        self.assertEqual(window.engine.phase, "waiting_choice")
+                        self.assertIsNone(window.mode)
+                        self.assertFalse(window.mode_timer.isActive())
+                        self.assertEqual(load_game(data, AUTO_SLOT, root).phase, "waiting_choice")
+                        window.choose("yes")
+                        saved = load_game(data, AUTO_SLOT, root)
+                        self.assertEqual(saved.node_id, "next")
+                        self.assertEqual(saved.choices, {"start": "yes"})
+                        self.assertEqual(load_game(data, 1, root).node_id, "start")
+                    finally:
+                        window.close()
 
     def test_theme_image_keeps_aspect_with_background_bars(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -81,7 +119,7 @@ class PlayerTests(unittest.TestCase):
             data = game()
             data["save_compatibility_id"] = "compat-1"
             data["nodes"][0]["name"] = "开场节点"
-            window = PlayerWindow(data, root)
+            window = PlayerWindow(data, root, autosave=False)
             window.start_new_game()
             save_game(window.engine, data, 1, local_appdata=root)
             slots = list_save_slots(data, local_appdata=root)
@@ -109,6 +147,7 @@ class PlayerTests(unittest.TestCase):
                 start_node_id="second",
                 initial_variables={"v1": True},
                 auto_start=True,
+                autosave=False,
             )
             self.assertEqual(window.pages.currentIndex(), 1)
             self.assertEqual(window.engine.node_id, "second")

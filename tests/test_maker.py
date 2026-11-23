@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from galgame_maker.maker import MakerWindow
@@ -38,6 +39,42 @@ class MakerTests(unittest.TestCase):
             self.assertEqual(window.preview_window.game["title"], "测试短篇")
             window.preview_window.close()
             window.close()
+
+    def test_insert_items_before_and_after_selected_row(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "项目"
+            window = MakerWindow()
+            window.set_project(root, create_project(root, "测试"))
+            try:
+                node = window.editor.add_node("开场")
+                first = window.editor.add_item(node["id"], "narration", text="第一句")
+                last = window.editor.add_item(node["id"], "narration", text="最后一句")
+                window.refresh_story(node["id"])
+                with (
+                    patch("galgame_maker.maker.QInputDialog.getItem", return_value=("旁白 (narration)", True)),
+                    patch("galgame_maker.maker.QInputDialog.getMultiLineText", side_effect=[
+                        ("开头", True), ("结尾", True), ("取消", False),
+                    ]),
+                ):
+                    window.items_list.setCurrentRow(0)
+                    window.insert_item(0)
+                    self.assertEqual(window.items_list.currentRow(), 0)
+                    window.items_list.setCurrentRow(2)
+                    window.insert_item(1)
+                    self.assertEqual(window.items_list.currentRow(), 3)
+                    window.insert_item(0)
+                self.assertEqual([item["text"] for item in node["items"]], [
+                    "开头", "第一句", "最后一句", "结尾",
+                ])
+                self.assertEqual([item["id"] for item in node["items"][1:3]], [first["id"], last["id"]])
+                self.assertEqual(
+                    window.items_list.currentItem().data(Qt.ItemDataRole.UserRole), node["items"][3]["id"],
+                )
+                self.assertTrue(window.save())
+                self.assertEqual(load_project(root)["nodes"][0]["items"], node["items"])
+            finally:
+                window.dirty = False
+                window.close()
 
     def test_edge_condition_editing_uses_current_variable_names(self):
         with tempfile.TemporaryDirectory() as folder:
