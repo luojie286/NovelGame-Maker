@@ -35,6 +35,11 @@ def validate_condition(
     """Validate each leaf before evaluation or translation to a solver."""
     if not isinstance(tree, dict):
         raise ConditionError("condition must be an object")
+    if tree.get("op") == "not":
+        if set(tree) != {"op", "arg"}:
+            raise ConditionError("not condition has invalid fields")
+        validate_condition(tree["arg"], definitions, choice_ids)
+        return
     if tree.get("op") == "and" or tree.get("op") == "or":
         if set(tree) != {"op", "args"}:
             raise ConditionError("logical condition has invalid fields")
@@ -53,8 +58,8 @@ def validate_condition(
             raise ConditionError("bare condition requires a bool variable")
         return
     if kind == "choice":
-        if set(tree) != {"kind", "op", "choice_id"} or tree["op"] != "eq":
-            raise ConditionError("choice comparison must use eq")
+        if set(tree) != {"kind", "op", "choice_id"} or tree["op"] not in {"eq", "ne"}:
+            raise ConditionError("choice comparison must use eq or ne")
         if not isinstance(tree["choice_id"], str) or tree["choice_id"] not in choice_ids:
             raise ConditionError(f"choice does not belong to source node: {tree['choice_id']}")
         return
@@ -79,6 +84,8 @@ def evaluate_condition(
 ) -> bool:
     """Evaluate a validated tree against the pre-transition state."""
     operator = tree.get("op")
+    if operator == "not":
+        return not evaluate_condition(tree["arg"], values, choice_id)
     if operator == "and":
         return all(evaluate_condition(child, values, choice_id) for child in tree["args"])
     if operator == "or":
@@ -87,7 +94,7 @@ def evaluate_condition(
     if kind == "boolean":
         return values[tree["variable_id"]]
     if kind == "choice":
-        return choice_id == tree["choice_id"]
+        return (choice_id == tree["choice_id"]) if operator == "eq" else (choice_id != tree["choice_id"])
     left = values[tree["variable_id"]]
     right = tree["value"]
     return COMPARISONS[operator](left, right)

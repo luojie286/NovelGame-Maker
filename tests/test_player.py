@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
 from galgame_maker.player import PlayerWindow, ThemedFrame
+from galgame_maker.saves import list_save_slots, save_game
 
 
 def game():
@@ -73,6 +74,46 @@ class PlayerTests(unittest.TestCase):
             self.assertEqual(rendered.pixelColor(10, 50), QColor("#000000"))
             self.assertEqual(rendered.pixelColor(100, 50), QColor("#FF0000"))
             frame.close()
+
+    def test_restore_reveals_full_page_immediately_and_lists_slots(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = game()
+            data["save_compatibility_id"] = "compat-1"
+            data["nodes"][0]["name"] = "开场节点"
+            window = PlayerWindow(data, root)
+            window.start_new_game()
+            save_game(window.engine, data, 1, local_appdata=root)
+            slots = list_save_slots(data, local_appdata=root)
+            self.assertTrue(slots[0]["exists"] and slots[0]["compatible"])
+            self.assertEqual(slots[0]["node_name"], "开场节点")
+            self.assertFalse(slots[1]["exists"])
+
+            window.refresh(reveal_immediately=True)
+            self.assertFalse(window.timer.isActive())
+            self.assertEqual(window.text.text(), "测试对白")
+            window.close()
+
+    def test_preview_starts_at_selected_node_with_custom_variables(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = game()
+            data["variables"] = [{"id": "v1", "name": "flag", "type": "bool", "initial_value": False}]
+            data["nodes"].append({
+                "id": "second",
+                "name": "第二节点",
+                "items": [{"id": "line2", "type": "narration", "text": "调试起点"}],
+                "ending": {"credits_video_asset_id": None},
+            })
+            window = PlayerWindow(
+                data, Path(folder),
+                start_node_id="second",
+                initial_variables={"v1": True},
+                auto_start=True,
+            )
+            self.assertEqual(window.pages.currentIndex(), 1)
+            self.assertEqual(window.engine.node_id, "second")
+            self.assertTrue(window.engine.variables_state["v1"])
+            window.close()
 
 
 if __name__ == "__main__":

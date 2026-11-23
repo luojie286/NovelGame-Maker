@@ -64,3 +64,45 @@ def load_game(
     replacement.take_commands()
     replacement.restore(save)
     return replacement
+
+
+def list_save_slots(
+    game: dict[str, Any],
+    local_appdata: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """Inspect manual slots 1..3 for menu labels without mutating saves."""
+    node_names = {node["id"]: node.get("name", "") for node in game.get("nodes", [])}
+    slots: list[dict[str, Any]] = []
+    for slot in (1, 2, 3):
+        path = save_path(game, slot, local_appdata)
+        if not path.is_file():
+            slots.append({
+                "slot": slot, "exists": False, "compatible": False,
+                "saved_at": None, "node_name": None, "error": None,
+            })
+            continue
+        try:
+            with path.open(encoding="utf-8") as stream:
+                save = json.load(stream, object_pairs_hook=_unique_object)
+        except (OSError, ValueError) as error:
+            slots.append({
+                "slot": slot, "exists": True, "compatible": False,
+                "saved_at": None, "node_name": None, "error": str(error),
+            })
+            continue
+        compatible = (
+            type(save.get("schema_version")) is int
+            and save.get("schema_version") == 1
+            and save.get("game_id") == game["game_id"]
+            and save.get("save_compatibility_id") == game["save_compatibility_id"]
+            and save.get("slot") == slot
+        )
+        slots.append({
+            "slot": slot,
+            "exists": True,
+            "compatible": compatible,
+            "saved_at": save.get("saved_at"),
+            "node_name": node_names.get(save.get("node_id")) if compatible else None,
+            "error": None if compatible else "不兼容的剧情版本",
+        })
+    return slots

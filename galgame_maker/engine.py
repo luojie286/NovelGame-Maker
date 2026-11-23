@@ -15,7 +15,12 @@ class StoryError(ValueError):
 
 
 class StoryEngine:
-    def __init__(self, game: dict[str, Any]):
+    def __init__(
+        self,
+        game: dict[str, Any],
+        start_node_id: str | None = None,
+        initial_variables: dict[str, int | bool] | None = None,
+    ):
         self.game = game
         self.nodes = {node["id"]: node for node in game["nodes"]}
         self.variables = {variable["id"]: variable for variable in game["variables"]}
@@ -44,14 +49,23 @@ class StoryEngine:
                     ready.append(target)
         if visited != len(self.nodes):
             raise StoryError("story graph contains a cycle")
-        if game["start_node_id"] not in self.nodes:
+        entry_node = start_node_id if start_node_id is not None else game["start_node_id"]
+        if entry_node not in self.nodes:
             raise StoryError("start node is missing")
         self.variables_state = {
             variable_id: definition["initial_value"]
             for variable_id, definition in self.variables.items()
         }
+        if initial_variables is not None:
+            for variable_id, value in initial_variables.items():
+                if variable_id not in self.variables:
+                    raise StoryError(f"unknown initial variable: {variable_id}")
+                expected = int if self.variables[variable_id]["type"] == "int" else bool
+                if type(value) is not expected:
+                    raise StoryError(f"initial variable type mismatch: {variable_id}")
+                self.variables_state[variable_id] = value
         self.choices: dict[str, str] = {}
-        self.node_id = game["start_node_id"]
+        self.node_id = entry_node
         self.item_index = 0
         self.page_start_offset = 0
         self.phase = "starting"
@@ -113,11 +127,12 @@ class StoryEngine:
             if not self._finish_node(None):
                 return
 
-    def advance(self) -> None:
+    def advance(self, max_chars: int = 80) -> None:
         if self.phase != "waiting_advance":
             raise StoryError("advance is unavailable in this phase")
         item = self.nodes[self.node_id]["items"][self.item_index]
-        next_offset = page_end(item["text"], self.page_start_offset)
+        limit = min(80, max(1, max_chars))
+        next_offset = page_end(item["text"], self.page_start_offset, maximum=limit)
         if next_offset < len(item["text"]):
             self.page_start_offset = next_offset
             return
@@ -126,11 +141,12 @@ class StoryEngine:
         self.presentation["line_item_id"] = None
         self._run_items()
 
-    def current_page(self) -> str:
+    def current_page(self, max_chars: int = 80) -> str:
         if self.phase != "waiting_advance":
             raise StoryError("no dialogue page is active")
         text = self.nodes[self.node_id]["items"][self.item_index]["text"]
-        end = page_end(text, self.page_start_offset)
+        limit = min(80, max(1, max_chars))
+        end = page_end(text, self.page_start_offset, maximum=limit)
         return text[self.page_start_offset:end]
 
     def select(self, choice_id: str) -> None:

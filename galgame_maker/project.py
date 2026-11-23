@@ -238,3 +238,77 @@ def import_asset(
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def replace_asset(
+    directory: Path | str,
+    data: dict[str, Any],
+    asset_id: str,
+    source: Path | str,
+) -> dict[str, Any]:
+    """Replace an asset's file bytes while preserving its stable ID and references."""
+    root = Path(directory)
+    validate_project(data, root)
+    record = next((asset for asset in data["assets"] if asset["id"] == asset_id), None)
+    if record is None:
+        raise ValueError(f"unknown asset: {asset_id}")
+    source_path = Path(source)
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    file_id = new_id()
+    suffix = source_path.suffix.lower()
+    relative = f"assets/{file_id}{suffix}"
+    destination = resolve_asset_path(root, relative)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=destination.parent, prefix=f".{file_id}.",
+            suffix=".tmp", delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            with source_path.open("rb") as input_file:
+                while chunk := input_file.read(1024 * 1024):
+                    output.write(chunk)
+                    digest.update(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+        record["path"] = relative
+        record["sha256"] = digest.hexdigest()
+        return record
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def verify_assets(directory: Path | str, data: dict[str, Any]) -> list[dict[str, str]]:
+    """Recompute SHA-256 for every asset in the project and return any issues."""
+    root = Path(directory)
+    issues: list[dict[str, str]] = []
+    for asset in data.get("assets", []):
+        try:
+            path = resolve_asset_path(root, asset["path"])
+        except ProjectFormatError as error:
+            issues.append({
+                "asset_id": asset["id"], "name": asset["name"],
+                "path": asset.get("path", ""), "issue": str(error),
+            })
+            continue
+        if not path.is_file():
+            issues.append({
+                "asset_id": asset["id"], "name": asset["name"],
+                "path": asset["path"], "issue": "missing",
+            })
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        if digest.hexdigest() != asset["sha256"]:
+            issues.append({
+                "asset_id": asset["id"], "name": asset["name"],
+                "path": asset["path"], "issue": "mismatch",
+            })
+    return issues
