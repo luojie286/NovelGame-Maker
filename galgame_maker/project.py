@@ -13,7 +13,8 @@ from typing import Any
 
 
 PROJECT_VERSION = 1
-ASSET_KINDS = {"image", "text", "bgm", "sfx", "voice", "video"}
+MUSIC_KINDS = ("bgm", "song")
+ASSET_KINDS = {"image", "text", "sfx", "voice", "video", *MUSIC_KINDS}
 SPRITE_DIMENSIONS = {"expression": "神态", "outfit": "服装", "action": "动作"}
 ROOT_REQUIRED = {
     "schema_version", "project_id", "title", "start_node_id",

@@ -28,7 +28,7 @@ from .maker_style import MAKER_STYLESHEET
 from .maker_text import TextPanel
 from .maker_theme import ThemePanel
 from .player import PlayerWindow
-from .project import create_project, load_project, resolve_asset_path, save_project
+from .project import MUSIC_KINDS, create_project, load_project, resolve_asset_path, save_project
 from .runtime_data import compile_game
 
 ITEM_TYPE_LABELS = {
@@ -1559,7 +1559,8 @@ class MakerWindow(QMainWindow):
         *,
         sprite_variants: bool = False,
     ) -> tuple[str | None, bool]:
-        has_any = any(asset["kind"] == required_kind for asset in self.project["assets"])
+        kinds = MUSIC_KINDS if required_kind == "bgm" else (required_kind,)
+        has_any = any(asset["kind"] in kinds for asset in self.project["assets"])
         if not has_any and allow_none_label is None:
             QMessageBox.information(self, "素材", f"请先在素材页导入 {required_kind} 类型的素材")
             return None, False

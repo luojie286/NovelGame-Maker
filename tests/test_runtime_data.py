@@ -62,6 +62,20 @@ class RuntimeDataTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "conflict"):
             compile_game(self.project, self.root)
 
+    def test_reclassifying_music_keeps_existing_playback_and_save_compatibility(self):
+        source = self.root.parent / "song.mp3"
+        source.write_bytes(b"synthetic audio")
+        asset = import_asset(self.root, self.project, source, "bgm", "片尾曲")
+        self.project["nodes"][0]["items"].insert(0, {
+            "id": new_id(), "type": "play_bgm", "asset_id": asset["id"],
+        })
+        original = compile_game(self.project, self.root)
+        asset["kind"] = "song"
+        updated = compile_game(self.project, self.root)
+        self.assertEqual(updated["assets"][0]["kind"], "song")
+        self.assertEqual(original["save_compatibility_id"], updated["save_compatibility_id"])
+        self.assertEqual(StoryEngine(original).take_commands(), StoryEngine(updated).take_commands())
+
     def test_theme_change_preserves_save_compatibility(self):
         original = compile_game(self.project, self.root)
         self.project["theme"] = {"choice": {"font_size_px": 40}}

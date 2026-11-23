@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .project import SPRITE_DIMENSIONS, import_asset, replace_asset, resolve_asset_path, verify_assets
+from .project import (
+    MUSIC_KINDS, SPRITE_DIMENSIONS, import_asset, replace_asset, resolve_asset_path, verify_assets,
+)
 
 
 EXTENSION_KIND = {
@@ -28,12 +30,13 @@ IMAGE_CATEGORIES = ("背景", "立绘", "界面", "其他")
 KIND_LABELS = {
     "image": "图片",
     "bgm": "背景音乐",
+    "song": "人声歌曲",
     "sfx": "音效",
     "voice": "角色语音",
     "video": "片尾视频",
     "text": "文本资料",
 }
-AUDIO_KINDS = {"bgm", "sfx", "voice"}
+AUDIO_KINDS = {"sfx", "voice", *MUSIC_KINDS}
 
 
 def variant_description(asset: dict, project: dict) -> str:
@@ -67,6 +70,7 @@ def _make_badge_icon(kind: str) -> QIcon:
     """Draw a clean vector card icon for non-image assets."""
     colors = {
         "bgm": ("#2C224A", "#9F7AEA", "BGM"),
+        "song": ("#44263A", "#F3A6C8", "SONG"),
         "sfx": ("#1B3B3A", "#38B2AC", "SFX"),
         "voice": ("#3E2537", "#EBA7D1", "VOICE"),
         "video": ("#3E2A1A", "#ED8936", "MP4"),
@@ -164,6 +168,16 @@ class AssetPickerDialog(QDialog):
             self.category.currentTextChanged.connect(self._reload)
             filters.addWidget(QLabel("分类"))
             filters.addWidget(self.category)
+        elif required_kind == "bgm":
+            for kind in MUSIC_KINDS:
+                self.category.addItem(KIND_LABELS[kind], kind)
+            music_assets = [asset for asset in project["assets"] if asset["kind"] in MUSIC_KINDS]
+            selected = next((asset for asset in music_assets if asset["id"] == current_asset_id), None)
+            if selected is not None or (music_assets and all(asset["kind"] == "song" for asset in music_assets)):
+                self.category.setCurrentIndex(self.category.findData(selected["kind"] if selected else "song"))
+            self.category.currentIndexChanged.connect(self._reload)
+            filters.addWidget(QLabel("音乐类别"))
+            filters.addWidget(self.category)
         self.search = QLineEdit()
         self.search.setPlaceholderText("按名称搜索素材...")
         self.search.textChanged.connect(self._reload)
@@ -222,12 +236,13 @@ class AssetPickerDialog(QDialog):
             self.listing.addItem(none_row)
         needle = self.search.text().casefold().strip()
         selected_cat = self.category.currentText() if self.required_kind == "image" else "全部分类"
+        selected_kind = self.category.currentData() if self.required_kind == "bgm" else self.required_kind
         required_fields = {
             key: combo.currentData() for key, combo in self.variant_filters.items()
             if combo.currentData() is not None
         }
         for asset in self.project["assets"]:
-            if asset["kind"] != self.required_kind:
+            if asset["kind"] != selected_kind:
                 continue
             tags = asset.get("tags", [])
             if self.required_kind == "image" and selected_cat != "全部分类":
@@ -337,6 +352,7 @@ class AssetPanel(QWidget):
             ("批量导入", self.import_file),
             ("新建分类", self.add_folder),
             ("分类标签", self.edit_tags),
+            ("音乐分类", self.edit_music_kind),
             ("立绘变体", self.edit_variant),
             ("替换", self.replace_file),
             ("重命名", self.rename_asset),
@@ -647,14 +663,18 @@ class AssetPanel(QWidget):
             if suggested is None:
                 QMessageBox.warning(self, "格式", "首版支持 PNG、JPEG、TXT、MP3、WAV、MP4")
                 return
-            kinds = ["image", "text", "bgm", "sfx", "voice", "video"]
-            if suggested in AUDIO_KINDS and self.kind.currentText() == "voice":
-                suggested = "voice"
-            selected, accepted = QInputDialog.getItem(
-                self, "素材用途", "类型", kinds, kinds.index(suggested), editable=False,
-            )
-            if not accepted:
-                return
+            selected = suggested
+            if suggested in AUDIO_KINDS:
+                kinds = [kind for kind in KIND_LABELS if kind in AUDIO_KINDS]
+                labels = [KIND_LABELS[kind] for kind in kinds]
+                preferred = self.kind.currentText()
+                default = preferred if preferred in AUDIO_KINDS else suggested
+                label, accepted = QInputDialog.getItem(
+                    self, "素材用途", "类型", labels, kinds.index(default), editable=False,
+                )
+                if not accepted:
+                    return
+                selected = kinds[labels.index(label)]
             name, accepted = QInputDialog.getText(self, "素材名称", "名称", text=source.stem)
             if not accepted or not name.strip():
                 return
@@ -704,8 +724,8 @@ class AssetPanel(QWidget):
             for filename in filenames:
                 source = Path(filename)
                 kind = EXTENSION_KIND.get(source.suffix.lower())
-                if kind in AUDIO_KINDS and self.kind.currentText() == "voice":
-                    kind = "voice"
+                if kind in AUDIO_KINDS and self.kind.currentText() in AUDIO_KINDS:
+                    kind = self.kind.currentText()
                 if kind is None:
                     skipped.append(f"{source.name}（不支持的格式）")
                     continue
@@ -737,6 +757,23 @@ class AssetPanel(QWidget):
             if row.data(Qt.ItemDataRole.UserRole) == last_id:
                 self.list.setCurrentItem(row)
                 break
+
+    def edit_music_kind(self):
+        asset = self.selected_asset()
+        if asset is None or asset["kind"] not in MUSIC_KINDS:
+            QMessageBox.information(self, "音乐分类", "请选择一项背景音乐或人声歌曲")
+            return
+        labels = [KIND_LABELS[kind] for kind in MUSIC_KINDS]
+        label, accepted = QInputDialog.getItem(
+            self, "音乐分类", "用途", labels, MUSIC_KINDS.index(asset["kind"]), editable=False,
+        )
+        if not accepted:
+            return
+        kind = MUSIC_KINDS[labels.index(label)]
+        if kind != asset["kind"]:
+            asset["kind"] = kind
+            self.window.mark_dirty()
+            self.select_asset(asset["id"], kind)
 
     def edit_tags(self):
         asset = self.selected_asset()
@@ -811,7 +848,7 @@ class AssetPanel(QWidget):
         if suggested is None:
             QMessageBox.warning(self, "格式", "首版支持 PNG、JPEG、TXT、MP3、WAV、MP4")
             return
-        if suggested != asset["kind"] and not (asset["kind"] == "voice" and suggested in AUDIO_KINDS):
+        if suggested != asset["kind"] and not (asset["kind"] in AUDIO_KINDS and suggested in AUDIO_KINDS):
             QMessageBox.warning(
                 self, "类型不匹配",
                 f"当前素材类型为 {asset['kind']}，所选文件类型为 {suggested}",
