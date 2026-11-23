@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QSplitter, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPushButton, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .editing import EditError
 from .project import new_id, resolve_asset_path
+
+SEARCH_KIND_FILTERS = [
+    ("全部类型", None),
+    ("正文对白", {"text"}),
+    ("剧情节点", {"node"}),
+    ("剧本与设定", {"document"}),
+    ("文本摘录", {"excerpt"}),
+    ("角色", {"character"}),
+    ("素材", {"asset"}),
+]
+
+SEARCH_KIND_LABELS = {
+    "text": "正文",
+    "node": "节点",
+    "document": "设定",
+    "excerpt": "摘录",
+    "character": "角色",
+    "asset": "素材",
+}
 
 
 class TextPanel(QWidget):
@@ -20,13 +41,24 @@ class TextPanel(QWidget):
         outer = QVBoxLayout(self)
         search_bar = QHBoxLayout()
         self.query = QLineEdit()
-        self.query.setPlaceholderText("搜索角色、节点、对白、资料与素材")
+        self.query.setPlaceholderText("搜索角色、节点、对白、资料、摘录与素材（SQLite FTS5 索引）")
         self.query.returnPressed.connect(self.search)
-        search_bar.addWidget(self.query)
+        search_bar.addWidget(self.query, 1)
+        self.kind_filter = QComboBox()
+        for caption, kinds in SEARCH_KIND_FILTERS:
+            self.kind_filter.addItem(caption, kinds)
+        self.kind_filter.currentIndexChanged.connect(self.search)
+        search_bar.addWidget(self.kind_filter)
         search_button = QPushButton("搜索")
         search_button.clicked.connect(self.search)
         search_bar.addWidget(search_button)
+        rebuild_button = QPushButton("重建索引")
+        rebuild_button.clicked.connect(self.rebuild_index)
+        search_bar.addWidget(rebuild_button)
         outer.addLayout(search_bar)
+        self.search_status = QLabel("SQLite FTS5 索引就绪")
+        self.search_status.setStyleSheet("color: #9BB0C9; font-size: 12px;")
+        outer.addWidget(self.search_status)
         self.results = QListWidget()
         self.results.itemDoubleClicked.connect(self.open_result)
         outer.addWidget(self.results)
@@ -106,7 +138,10 @@ class TextPanel(QWidget):
             self.document_title.clear()
             self.document_text.clear()
             self.excerpt_text.clear()
+            self.search_status.setText("SQLite FTS5 索引：未打开项目")
             return
+        if self.window.editor is not None:
+            self.window.editor.bump_version()
         for document in self.window.project.get("documents", []):
             row = QListWidgetItem(f"{document['title']} · {document['kind']}")
             row.setData(Qt.ItemDataRole.UserRole, document["id"])
@@ -296,20 +331,39 @@ class TextPanel(QWidget):
         self.window.mark_dirty()
         self.refresh()
 
+    def rebuild_index(self):
+        if not self.window.require_project() or self.window.editor is None:
+            return
+        started = time.perf_counter()
+        stats = self.window.editor.rebuild_search_index()
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self.search_status.setText(
+            f"SQLite FTS5 索引已重建：{stats.added} 条记录 · {elapsed_ms:.2f} ms"
+        )
+        if self.query.text().strip():
+            self.search()
+
     def search(self):
         self.results.clear()
-        if self.window.project is None or not self.query.text().strip():
+        if self.window.project is None or self.window.editor is None or not self.query.text().strip():
             return
-        for result in self.window.editor.search(self.query.text()):
-            row = QListWidgetItem(f"{result.kind} · {result.label}")
+        kinds = self.kind_filter.currentData()
+        started = time.perf_counter()
+        hits = self.window.editor.search(
+            self.query.text(),
+            kinds=kinds,
+            include_excerpts=True,
+            use_version_cache=True,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        for result in hits:
+            kind_label = SEARCH_KIND_LABELS.get(result.kind, result.kind)
+            row = QListWidgetItem(f"{kind_label} · {result.label}")
             row.setData(Qt.ItemDataRole.UserRole, (result.kind, result.entity_id, result.node_id))
             self.results.addItem(row)
-        for excerpt in self.window.project.get("excerpts", []):
-            text = self.window.editor.excerpt_text(excerpt)
-            if text is not None and self.query.text().casefold() in text.casefold():
-                row = QListWidgetItem(f"摘录 · {text[:72]}")
-                row.setData(Qt.ItemDataRole.UserRole, ("excerpt", excerpt["id"], excerpt["node_id"]))
-                self.results.addItem(row)
+        self.search_status.setText(
+            f"找到 {len(hits)} 条结果 · {elapsed_ms:.2f} ms · SQLite FTS5"
+        )
 
     def open_result(self, row: QListWidgetItem):
         kind, entity_id, node_id = row.data(Qt.ItemDataRole.UserRole)
