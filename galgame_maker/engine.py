@@ -65,6 +65,7 @@ class StoryEngine:
                     raise StoryError(f"initial variable type mismatch: {variable_id}")
                 self.variables_state[variable_id] = value
         self.choices: dict[str, str] = {}
+        self.history: list[dict[str, str]] = []
         self.node_id = entry_node
         self.item_index = 0
         self.page_start_offset = 0
@@ -90,6 +91,9 @@ class StoryEngine:
                 if kind in {"dialogue", "narration"}:
                     self.presentation["line_item_id"] = item["id"]
                     self.phase = "waiting_advance"
+                    self.history.append({"node_id": self.node_id, "item_id": item["id"]})
+                    if item.get("voice_asset_id"):
+                        self.commands.append({"type": "play_voice", "asset_id": item["voice_asset_id"]})
                     return
                 if kind == "set_background":
                     self.presentation["background_asset_id"] = item["asset_id"]
@@ -131,6 +135,8 @@ class StoryEngine:
         if self.phase != "waiting_advance":
             raise StoryError("advance is unavailable in this phase")
         item = self.nodes[self.node_id]["items"][self.item_index]
+        if self.page_start_offset == 0 and item.get("voice_asset_id"):
+            self.commands.append({"type": "stop_voice"})
         limit = min(80, max(1, max_chars))
         next_offset = page_end(item["text"], self.page_start_offset, maximum=limit)
         if next_offset < len(item["text"]):
@@ -156,8 +162,11 @@ class StoryEngine:
         valid_ids = {choice["id"] for choice in node.get("choices", [])}
         if choice_id not in valid_ids:
             raise StoryError(f"invalid choice: {choice_id}")
-        self.choices[self.node_id] = choice_id
-        if self._finish_node(choice_id):
+        source_id = self.node_id
+        entered_node = self._finish_node(choice_id)
+        self.choices[source_id] = choice_id
+        self.history.append({"node_id": source_id, "choice_id": choice_id})
+        if entered_node:
             self._run_items()
 
     def _finish_node(self, choice_id: str | None) -> bool:
@@ -244,6 +253,7 @@ class StoryEngine:
             "item_id": item_id,
             "variables": self.variables_state.copy(),
             "choices": self.choices.copy(),
+            "history": deepcopy(self.history),
             "page_start_offset": self.page_start_offset if item_id is not None else None,
             "presentation": deepcopy(self.presentation),
         }
@@ -287,14 +297,39 @@ class StoryEngine:
         presentation = snapshot["presentation"]
         if presentation["line_item_id"] != item_id:
             raise StoryError("save presentation text is inconsistent")
+        history = snapshot.get("history", [])
+        if not isinstance(history, list):
+            raise StoryError("save history must be an array")
+        # Older saves have no history. Seed the currently displayed line so
+        # it remains available in the backlog after the player moves on.
+        if not history and item_id is not None:
+            history = [{"node_id": node_id, "item_id": item_id}]
+        for entry in history:
+            self.history_item(entry)
         self.node_id = node_id
         self.item_index = index
         self.page_start_offset = offset
         self.phase = phase
         self.variables_state = values.copy()
         self.choices = snapshot["choices"].copy()
+        self.history = deepcopy(history)
         self.presentation = deepcopy(presentation)
         self.error = "NO_MATCHING_BRANCH" if phase == "stalled" and self.edges_by_source[node_id] else None
         self.commands = []
         if presentation["bgm"] is not None:
             self.commands.append({"type": "play_bgm", **presentation["bgm"]})
+
+    def history_item(self, entry: dict[str, str]) -> dict[str, Any]:
+        """Resolve a backlog reference against the compatible compiled story."""
+        if not isinstance(entry, dict) or not isinstance(entry.get("node_id"), str):
+            raise StoryError("invalid history entry")
+        node = self.nodes.get(entry["node_id"], {})
+        if set(entry) == {"node_id", "item_id"}:
+            for item in node.get("items", []):
+                if item["id"] == entry["item_id"] and item["type"] in {"dialogue", "narration"}:
+                    return item
+        if set(entry) == {"node_id", "choice_id"}:
+            for choice in node.get("choices", []):
+                if choice["id"] == entry["choice_id"]:
+                    return choice
+        raise StoryError("save history references missing text")

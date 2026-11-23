@@ -1,4 +1,4 @@
-"""Three atomic manual save slots for the exported Windows player."""
+"""Atomic manual and automatic save slots for the exported Windows player."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .engine import StoryEngine
 from .project import _atomic_json, _unique_object
@@ -15,10 +15,13 @@ from .project import _atomic_json, _unique_object
 class SaveError(ValueError):
     """A save belongs to another game or has an unsupported format."""
 
+AUTO_SLOT = "auto"
+SaveSlot = int | Literal["auto"]
 
-def save_path(game: dict[str, Any], slot: int, local_appdata: Path | str | None = None) -> Path:
-    if type(slot) is not int or slot not in {1, 2, 3}:
-        raise ValueError("manual save slot must be 1, 2, or 3")
+
+def save_path(game: dict[str, Any], slot: SaveSlot, local_appdata: Path | str | None = None) -> Path:
+    if slot != AUTO_SLOT and (type(slot) is not int or slot not in {1, 2, 3}):
+        raise ValueError("save slot must be 1, 2, 3, or auto")
     root = Path(local_appdata) if local_appdata is not None else Path(os.environ["LOCALAPPDATA"])
     return root / "GalGameMaker" / "Saves" / game["game_id"] / f"{slot}.json"
 
@@ -26,7 +29,7 @@ def save_path(game: dict[str, Any], slot: int, local_appdata: Path | str | None 
 def save_game(
     engine: StoryEngine,
     game: dict[str, Any],
-    slot: int,
+    slot: SaveSlot,
     local_appdata: Path | str | None = None,
 ) -> Path:
     path = save_path(game, slot, local_appdata)
@@ -45,13 +48,15 @@ def save_game(
 
 def load_game(
     game: dict[str, Any],
-    slot: int,
+    slot: SaveSlot,
     local_appdata: Path | str | None = None,
 ) -> StoryEngine:
     """Construct a replacement engine only after the entire save is valid."""
     path = save_path(game, slot, local_appdata)
     with path.open(encoding="utf-8") as stream:
         save = json.load(stream, object_pairs_hook=_unique_object)
+    if not isinstance(save, dict):
+        raise SaveError("save must be an object")
     if type(save.get("schema_version")) is not int or save["schema_version"] != 1:
         raise SaveError("unsupported save schema_version")
     if save.get("game_id") != game["game_id"]:
@@ -69,11 +74,13 @@ def load_game(
 def list_save_slots(
     game: dict[str, Any],
     local_appdata: Path | str | None = None,
+    *,
+    include_auto: bool = False,
 ) -> list[dict[str, Any]]:
-    """Inspect manual slots 1..3 for menu labels without mutating saves."""
+    """Inspect slot metadata for menu labels without mutating saves."""
     node_names = {node["id"]: node.get("name", "") for node in game.get("nodes", [])}
     slots: list[dict[str, Any]] = []
-    for slot in (1, 2, 3):
+    for slot in ((AUTO_SLOT, 1, 2, 3) if include_auto else (1, 2, 3)):
         path = save_path(game, slot, local_appdata)
         if not path.is_file():
             slots.append({
@@ -84,6 +91,8 @@ def list_save_slots(
         try:
             with path.open(encoding="utf-8") as stream:
                 save = json.load(stream, object_pairs_hook=_unique_object)
+            if not isinstance(save, dict):
+                raise SaveError("save must be an object")
         except (OSError, ValueError) as error:
             slots.append({
                 "slot": slot, "exists": True, "compatible": False,

@@ -36,6 +36,29 @@ def game():
 
 
 class EngineTests(unittest.TestCase):
+    def test_voice_stops_on_page_change_and_history_survives_restore(self):
+        story = game()
+        item = story["nodes"][0]["items"][1]
+        item.update(type="dialogue", text="测试语音", voice_asset_id="voice")
+        engine = StoryEngine(story)
+        self.assertEqual(engine.take_commands()[-1], {"type": "play_voice", "asset_id": "voice"})
+        engine.advance(max_chars=2)
+        self.assertEqual(engine.take_commands(), [{"type": "stop_voice"}])
+        self.assertEqual(engine.current_page(), "语音")
+        engine.advance()
+        self.assertEqual(engine.take_commands(), [])
+        engine.select("b")
+        snapshot = engine.snapshot()
+        restored = StoryEngine(story)
+        restored.restore(snapshot)
+        self.assertEqual(restored.take_commands(), [])
+        self.assertEqual([restored.history_item(entry)["text"] for entry in restored.history], [
+            "测试语音", "B", "汇合",
+        ])
+        snapshot.pop("history")
+        restored.restore(snapshot)
+        self.assertEqual(restored.history, [{"node_id": "shared", "item_id": "shared_line"}])
+
     def test_shared_node_and_effect_once_after_restore(self):
         for selected, expected in (("a", 1), ("b", 2)):
             with self.subTest(selected=selected):

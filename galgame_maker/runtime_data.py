@@ -13,7 +13,7 @@ from typing import Any
 
 from .branch_check import BranchCheckCache, check_overlap
 from .conditions import ConditionError, validate_condition
-from .project import validate_project
+from .project import MUSIC_KINDS, validate_project
 
 
 class CompileError(ValueError):
@@ -63,7 +63,8 @@ def compile_game(
     used_characters: set[str] = set()
 
     def require_asset(asset_id: Any, kind: str, location: str, story: bool = True) -> None:
-        if not isinstance(asset_id, str) or asset_id not in assets or assets[asset_id]["kind"] != kind:
+        kinds = MUSIC_KINDS if kind == "bgm" else (kind,)
+        if not isinstance(asset_id, str) or asset_id not in assets or assets[asset_id]["kind"] not in kinds:
             raise CompileError(f"{location} references missing {kind} asset: {asset_id}")
         used_assets.add(asset_id)
         if story:
@@ -116,6 +117,8 @@ def compile_game(
                 if item.get("character_id") not in characters:
                     raise CompileError(f"{location} references missing character")
                 used_characters.add(item["character_id"])
+                if item.get("voice_asset_id") is not None:
+                    require_asset(item["voice_asset_id"], "voice", location)
             if kind in {"dialogue", "narration"}:
                 if not isinstance(item.get("text"), str) or not item["text"]:
                     raise CompileError(f"{location} has empty text")
@@ -241,7 +244,8 @@ def compile_game(
         for node in game["nodes"]
     ]
     compatibility["assets"] = [
-        {"id": asset["id"], "kind": asset["kind"]}
+        # Both music categories use the same player command and save shape.
+        {"id": asset["id"], "kind": "bgm" if asset["kind"] in MUSIC_KINDS else asset["kind"]}
         for asset in game["assets"] if asset["id"] in story_assets
     ]
     game["save_compatibility_id"] = _canonical_digest(compatibility)
