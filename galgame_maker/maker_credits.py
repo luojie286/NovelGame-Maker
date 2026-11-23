@@ -17,9 +17,11 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from .project import import_asset, resolve_asset_path
+from .maker_assets import KIND_LABELS
+from .project import MUSIC_KINDS, import_asset, resolve_asset_path
 
 WIDTH, HEIGHT = 1280, 720
+TAIL_SECONDS = 3
 PRESETS = {
     "经典黑底": (40, 72, "#FFFFFF", "#101010"),
     "暖色报幕": (45, 56, "#FFE1AA", "#281824"),
@@ -67,8 +69,12 @@ def render_credits(text: str, size: int, color: QColor, image_path: Path) -> int
 
 def encode_arguments(
     image: Path, music: Path | None, output: Path, height: int, speed: int, background: QColor,
+    *, music_seconds: float | None = None,
 ) -> list[str]:
-    duration = (HEIGHT + height) / speed + 1
+    distance = HEIGHT + height
+    roll_seconds = music_seconds if music_seconds is not None else distance / speed
+    pixels_per_second = distance / roll_seconds
+    duration = roll_seconds + TAIL_SECONDS
     arguments = [
         "-hide_banner", "-loglevel", "error", "-nostdin",
         "-f", "lavfi", "-i", f"color=c=0x{background.name()[1:]}:s={WIDTH}x{HEIGHT}:r=30",
@@ -77,13 +83,34 @@ def encode_arguments(
     if music is not None:
         arguments += ["-i", str(music)]
     arguments += [
-        "-filter_complex", f"[0:v][1:v]overlay=(W-w)/2:{HEIGHT}-t*{speed}[video]",
-        "-map", "[video]", "-t", f"{duration:.3f}", "-c:v", "libx264",
+        "-filter_complex",
+        f"[0:v][1:v]overlay=(W-w)/2:{HEIGHT}-t*{pixels_per_second:.9f}"
+        f":enable='lt(t,{roll_seconds:.6f})'[video]",
+        "-map", "[video]", "-t", f"{duration:.6f}", "-c:v", "libx264",
         "-preset", "fast", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     ]
     if music is not None:
-        arguments += ["-map", "2:a:0", "-af", "apad", "-c:a", "aac", "-b:a", "192k"]
+        arguments += ["-map", "2:a:0", "-af", "asetpts=N/SR/TB,apad", "-c:a", "aac", "-b:a", "192k"]
     return [*arguments, str(output)]
+
+
+def audio_probe_arguments(music: Path) -> list[str]:
+    # Use the bundled encoder for probing as well. Measuring the decoded
+    # timeline avoids container duration estimates for variable-rate MP3.
+    return [
+        "-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-progress", "pipe:1",
+        "-i", str(music), "-map", "0:a:0", "-af", "asetpts=N/SR/TB", "-f", "null", "-",
+    ]
+
+
+def decoded_audio_seconds(progress: bytes) -> float:
+    for line in reversed(progress.splitlines()):
+        if line.startswith(b"out_time_us="):
+            value = line.split(b"=", 1)[1]
+            if value.isdigit() and int(value) > 0:
+                return int(value) / 1_000_000
+            break
+    raise ValueError("无法读取片尾曲的有效时长")
 
 
 class CreditsDialog(QDialog):
@@ -94,8 +121,9 @@ class CreditsDialog(QDialog):
         self.asset_id: str | None = None
         self.temporary: TemporaryDirectory | None = None
         self.cancelling = False
+        self.probing = False
         self.process = QProcess(self)
-        self.process.finished.connect(self.finish_encode)
+        self.process.finished.connect(self.finish_process)
         self.process.errorOccurred.connect(self.process_error)
         self.setWindowTitle("生成片尾报幕")
         self.resize(540, 470)
@@ -108,9 +136,10 @@ class CreditsDialog(QDialog):
         self.names.setPlaceholderText("输入制作人名单，每行一项")
         self.music = QComboBox()
         self.music.addItem("无片尾曲", None)
-        for asset in project["assets"]:
-            if asset["kind"] == "bgm":
-                self.music.addItem(asset["name"], asset)
+        for kind in MUSIC_KINDS:
+            for asset in project["assets"]:
+                if asset["kind"] == kind:
+                    self.music.addItem(f"{KIND_LABELS[kind]} · {asset['name']}", asset)
         self.preset = QComboBox()
         self.preset.addItems([*PRESETS, "自定义"])
         self.size = QSpinBox()
@@ -122,11 +151,12 @@ class CreditsDialog(QDialog):
         self.background = QLineEdit()
         for label, widget in (
             ("视频名称", self.name), ("制作人名单", self.names), ("片尾曲", self.music),
-            ("滚动风格", self.preset), ("字号", self.size), ("滚动速度", self.speed),
+            ("滚动风格", self.preset), ("字号", self.size), ("无片尾曲时的速度", self.speed),
             ("文字颜色", self.foreground), ("背景颜色", self.background),
         ):
             form.addRow(label, widget)
         self.preset.currentTextChanged.connect(self.apply_preset)
+        self.music.currentIndexChanged.connect(self.update_speed)
         self.apply_preset(self.preset.currentText())
         layout.addWidget(self.inputs)
 
@@ -143,7 +173,7 @@ class CreditsDialog(QDialog):
 
     def apply_preset(self, name: str):
         custom = name not in PRESETS
-        for widget in (self.size, self.speed, self.foreground, self.background):
+        for widget in (self.size, self.foreground, self.background):
             widget.setEnabled(custom)
         if not custom:
             size, speed, foreground, background = PRESETS[name]
@@ -151,6 +181,11 @@ class CreditsDialog(QDialog):
             self.speed.setValue(speed)
             self.foreground.setText(foreground)
             self.background.setText(background)
+        self.update_speed()
+
+    def update_speed(self):
+        self.speed.setEnabled(self.preset.currentText() not in PRESETS and self.music.currentData() is None)
+        self.speed.setToolTip("选用片尾曲时，根据音频时长自动调整滚动速度")
 
     def start_encode(self):
         names = self.names.toPlainText().strip()
@@ -170,13 +205,12 @@ class CreditsDialog(QDialog):
 
         music = self.music.currentData()
         try:
-            music_path = resolve_asset_path(self.root, music["path"]) if music else None
+            self.music_path = resolve_asset_path(self.root, music["path"]) if music else None
             self.temporary = TemporaryDirectory(prefix="galgame-credits-")
             folder = Path(self.temporary.name)
-            image = folder / "credits.png"
-            height = render_credits(names, self.size.value(), foreground, image)
+            self.image_path = folder / "credits.png"
+            self.image_height = render_credits(names, self.size.value(), foreground, self.image_path)
             self.video_path = folder / "credits.mp4"
-            arguments = encode_arguments(image, music_path, self.video_path, height, self.speed.value(), background)
         except (OSError, ValueError) as error:
             self.reset_job()
             QMessageBox.warning(self, "生成片尾失败", str(error))
@@ -189,10 +223,28 @@ class CreditsDialog(QDialog):
         self.inputs.setEnabled(False)
         self.generate.setEnabled(False)
         self.progress.show()
-        self.status.setText("正在生成片尾视频…")
-        self.process.start(executable, arguments)
+        self.executable = executable
+        self.background_color = background
+        if self.music_path is None:
+            self.start_video()
+        else:
+            self.probing = True
+            self.status.setText("正在读取片尾曲时长…")
+            self.process.start(executable, audio_probe_arguments(self.music_path))
 
-    def finish_encode(self, exit_code, exit_status):
+    def start_video(self, music_seconds: float | None = None):
+        self.probing = False
+        self.settings["music_seconds"] = music_seconds
+        if music_seconds is not None:
+            self.settings["speed"] = (HEIGHT + self.image_height) / music_seconds
+        arguments = encode_arguments(
+            self.image_path, self.music_path, self.video_path, self.image_height,
+            self.speed.value(), self.background_color, music_seconds=music_seconds,
+        )
+        self.status.setText("正在生成片尾视频…")
+        self.process.start(self.executable, arguments)
+
+    def finish_process(self, exit_code, exit_status):
         if self.cancelling:
             self.reset_job()
             super().reject()
@@ -201,6 +253,10 @@ class CreditsDialog(QDialog):
             if exit_code or exit_status != QProcess.ExitStatus.NormalExit:
                 detail = self.process.readAllStandardError().data().decode("utf-8", errors="replace").strip()
                 raise OSError(detail or f"FFmpeg 退出码：{exit_code}")
+            if self.probing:
+                music_seconds = decoded_audio_seconds(self.process.readAllStandardOutput().data())
+                self.start_video(music_seconds)
+                return
             asset = import_asset(self.root, self.project, self.video_path, "video", self.name.text().strip())
             self.asset_id = asset["id"]
             self.project.setdefault("editor", {}).setdefault("generated_credits", {})[self.asset_id] = self.settings
@@ -227,6 +283,7 @@ class CreditsDialog(QDialog):
         self.generate.setEnabled(True)
         self.progress.hide()
         self.status.clear()
+        self.probing = False
 
     def reject(self):
         if self.process.state() != QProcess.ProcessState.NotRunning:
