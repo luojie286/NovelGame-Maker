@@ -27,6 +27,7 @@ from .maker_graph import InteractiveGraphView, StoryEdgeItem, StoryNodeItem
 from .maker_style import MAKER_STYLESHEET
 from .maker_text import TextPanel
 from .maker_theme import ThemePanel
+from .maker_versions import VersionPanel
 from .player import PlayerWindow
 from .project import MUSIC_KINDS, create_project, load_project, resolve_asset_path, save_project
 from .runtime_data import compile_game
@@ -345,6 +346,8 @@ class MakerWindow(QMainWindow):
         tabs.addTab(self.text_panel, "文本与设定")
         self.theme_panel = ThemePanel(self)
         tabs.addTab(self.theme_panel, "界面主题")
+        self.version_panel = VersionPanel(self)
+        tabs.addTab(self.version_panel, "版本管理")
         self.tabs = tabs
         self.branch_status_label = QLabel("分支检查：未打开项目")
         self.statusBar().addPermanentWidget(self.branch_status_label)
@@ -356,6 +359,7 @@ class MakerWindow(QMainWindow):
             ("新建", self.new_project),
             ("打开", self.open_project),
             ("保存", self.save),
+            ("创建版本快照", lambda: self.version_panel.create_snapshot()),
             ("实时画面预览窗口", self.open_live_preview),
             ("运行预览", self.preview),
             ("调试预览", self.preview_debug),
@@ -557,6 +561,8 @@ class MakerWindow(QMainWindow):
 
     def mark_dirty(self):
         self.dirty = True
+        if self.editor is not None:
+            self.editor.bump_version()
         self.update_title()
         if self.project is not None:
             self.schedule_branch_check()
@@ -616,11 +622,17 @@ class MakerWindow(QMainWindow):
 
     def set_project(self, root: Path, project: dict):
         self._stop_branch_worker()
+        if self.editor is not None:
+            self.editor.close()
         self.branch_cache.clear()
         self.live_preview.clear_cache()
         self.root = root
         self.project = project
-        self.editor = ProjectEditor(project)
+        self.editor = ProjectEditor(
+            project,
+            index_path=root / ".cache" / "search_index.sqlite",
+        )
+        self.editor.sync_search_index(force_version=True)
         self.dirty = False
         self.update_title()
         self.refresh_story()
@@ -628,6 +640,7 @@ class MakerWindow(QMainWindow):
         self.character_panel.refresh()
         self.text_panel.refresh()
         self.theme_panel.load_part()
+        self.version_panel.refresh()
         self.schedule_branch_check()
 
     def _stop_branch_worker(self):
@@ -722,12 +735,19 @@ class MakerWindow(QMainWindow):
         if not self.require_project():
             return False
         try:
-            save_project(self.root, self.project)
+            save_project(
+                self.root,
+                self.project,
+                record_version=True,
+                version_label="保存快照",
+                skip_if_unchanged=True,
+            )
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "保存失败", str(error))
             return False
         self.dirty = False
         self.update_title()
+        self.version_panel.refresh()
         return True
 
     def current_node(self) -> dict | None:
@@ -1932,6 +1952,8 @@ class MakerWindow(QMainWindow):
     def closeEvent(self, event):
         if self._change_project():
             self._stop_branch_worker()
+            if self.editor is not None:
+                self.editor.close()
             self.asset_panel.stop_media()
             self.live_preview_window.close()
             event.accept()

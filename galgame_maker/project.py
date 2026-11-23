@@ -191,12 +191,29 @@ def load_project(directory: Path | str) -> dict[str, Any]:
     return data
 
 
-def save_project(directory: Path | str, data: dict[str, Any]) -> None:
+def save_project(
+    directory: Path | str,
+    data: dict[str, Any],
+    *,
+    record_version: bool = False,
+    version_label: str = "保存快照",
+    skip_if_unchanged: bool = True,
+) -> None:
     root = Path(directory)
     if not (root / "project.json").is_file():
         raise FileNotFoundError(root / "project.json")
     validate_project(data, root)
     _atomic_json(root / "project.json", data)
+    if record_version:
+        from .versioning import create_version
+
+        create_version(
+            root,
+            data,
+            label=version_label,
+            auto=True,
+            skip_if_unchanged=skip_if_unchanged,
+        )
 
 
 def import_asset(

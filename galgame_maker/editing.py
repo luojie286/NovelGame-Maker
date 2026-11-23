@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .project import new_id
+from .search_index import ProjectSearchIndex, SyncStats
 
 
 class EditError(ValueError):
@@ -22,8 +24,47 @@ class SearchResult:
 
 
 class ProjectEditor:
-    def __init__(self, project: dict[str, Any]):
+    def __init__(
+        self,
+        project: dict[str, Any],
+        *,
+        search_index: ProjectSearchIndex | None = None,
+        index_path: Path | str | None = None,
+    ):
         self.project = project
+        self._data_version = 0
+        self._owns_index = search_index is None
+        self._index_path: Path | None = Path(index_path) if index_path is not None else None
+        self._search_index: ProjectSearchIndex | None = search_index
+
+    @property
+    def search_index(self) -> ProjectSearchIndex:
+        if self._search_index is None:
+            self._search_index = ProjectSearchIndex(self._index_path)
+        return self._search_index
+
+    def bump_version(self) -> int:
+        """Advance the project data version so incremental search indexing re-syncs."""
+        self._data_version += 1
+        return self._data_version
+
+    @property
+    def data_version(self) -> int:
+        return self._data_version
+
+    def sync_search_index(self, *, force_version: bool = False) -> SyncStats:
+        """Synchronize the derived SQLite FTS5 index with the current project."""
+        version = self._data_version if force_version else None
+        return self.search_index.sync(self.project, data_version=version)
+
+    def rebuild_search_index(self) -> SyncStats:
+        """Rebuild the derived SQLite FTS5 index from scratch."""
+        return self.search_index.rebuild(self.project, data_version=self._data_version)
+
+    def close(self) -> None:
+        if self._owns_index and self._search_index is not None:
+            self._search_index.close()
+            self._search_index = None
 
     def node(self, node_id: str) -> dict[str, Any]:
         for node in self.project["nodes"]:
@@ -157,24 +198,26 @@ class ProjectEditor:
         selected = set(excerpt["item_ids"])
         return "\n".join(item["text"] for item in node["items"] if item["id"] in selected)
 
-    def search(self, query: str) -> list[SearchResult]:
-        needle = query.casefold().strip()
-        if not needle:
+    def search(
+        self,
+        query: str,
+        *,
+        kinds: set[str] | None = None,
+        include_excerpts: bool = False,
+        limit: int = 200,
+        use_version_cache: bool = False,
+    ) -> list[SearchResult]:
+        if not query.strip():
             return []
-        results = []
-        for asset in self.project["assets"]:
-            if needle in asset["name"].casefold():
-                results.append(SearchResult("asset", asset["id"], None, asset["name"]))
-        for character in self.project["characters"]:
-            if needle in (character["name"] + character.get("description", "")).casefold():
-                results.append(SearchResult("character", character["id"], None, character["name"]))
-        for document in self.project.get("documents", []):
-            if needle in (document["title"] + document["text"]).casefold():
-                results.append(SearchResult("document", document["id"], None, document["title"]))
-        for node in self.project["nodes"]:
-            if needle in node["name"].casefold():
-                results.append(SearchResult("node", node["id"], None, node["name"]))
-            for item in node["items"]:
-                if item["type"] in {"dialogue", "narration"} and needle in item["text"].casefold():
-                    results.append(SearchResult("text", item["id"], node["id"], item["text"][:80]))
-        return results
+        version = self._data_version if use_version_cache else None
+        self.search_index.sync(self.project, data_version=version)
+        hits = self.search_index.search(
+            query,
+            kinds=kinds,
+            include_excerpts=include_excerpts,
+            limit=limit,
+        )
+        return [
+            SearchResult(hit.kind, hit.entity_id, hit.node_id, hit.label)
+            for hit in hits
+        ]
