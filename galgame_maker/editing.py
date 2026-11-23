@@ -82,10 +82,14 @@ class ProjectEditor:
         self.project["edges"].append(edge)
         return edge
 
-    def add_item(self, node_id: str, item_type: str, **fields: Any) -> dict[str, Any]:
-        node = self.node(node_id)
+    def add_item(
+        self, node_id: str, item_type: str, *, index: int | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        items = self.node(node_id)["items"]
+        if index is not None and not 0 <= index <= len(items):
+            raise EditError("演出插入位置无效")
         item = {"id": new_id(), "type": item_type, **fields}
-        node["items"].append(item)
+        items.insert(len(items) if index is None else index, item)
         return item
 
     def move_item(self, node_id: str, item_id: str, offset: int) -> None:

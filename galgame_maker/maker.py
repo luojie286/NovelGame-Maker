@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QGraphicsScene, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QSpinBox, QSplitter,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -443,6 +443,12 @@ class MakerWindow(QMainWindow):
             button = QPushButton(label)
             button.clicked.connect(handler)
             item_actions.addWidget(button)
+        insert_button = QPushButton("插入")
+        insert_menu = QMenu(insert_button)
+        insert_menu.addAction("插入到选中条目前", lambda: self.insert_item(0))
+        insert_menu.addAction("插入到选中条目后", lambda: self.insert_item(1))
+        insert_button.setMenu(insert_menu)
+        item_actions.insertWidget(1, insert_button)
         items_layout.addLayout(item_actions)
         media_actions = QHBoxLayout()
         for label, handler in (
@@ -841,7 +847,7 @@ class MakerWindow(QMainWindow):
             return f"{prefix} · {assets.get(aid, '缺失素材')}"
         return prefix
 
-    def on_node_selected(self, current, previous):
+    def on_node_selected(self, current, previous, *, item_row: int | None = None):
         self.items_list.blockSignals(True)
         self.items_list.clear()
         node = self.current_node()
@@ -861,7 +867,7 @@ class MakerWindow(QMainWindow):
             self.items_list.addItem(row)
         self.items_list.blockSignals(False)
         if self.items_list.count():
-            self.items_list.setCurrentRow(self.items_list.count() - 1)
+            self.items_list.setCurrentRow(self.items_list.count() - 1 if item_row is None else item_row)
         else:
             self.update_live_preview()
         self.refresh_node_variables(node)
@@ -1614,7 +1620,14 @@ class MakerWindow(QMainWindow):
             "show_sprite", "asset_id", "image", "切换立绘", sprite_variants=True,
         )
 
-    def add_item(self):
+    def insert_item(self, offset: int):
+        row = self.items_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "插入演出", "请先选中一条演出。空节点可用「添加」。")
+            return
+        self.add_item(index=row + offset)
+
+    def add_item(self, *, index: int | None = None):
         node = self.current_node()
         if node is None:
             return
@@ -1695,9 +1708,9 @@ class MakerWindow(QMainWindow):
                 fields["placement"] = {
                     "x": x, "y": 1040, "scale_pct": scale, "z": z,
                 }
-        self.editor.add_item(node["id"], kind, **fields)
+        self.editor.add_item(node["id"], kind, index=index, **fields)
         self.mark_dirty()
-        self.on_node_selected(None, None)
+        self.on_node_selected(None, None, item_row=index)
         self.draw_graph()
 
     def edit_item(self):
