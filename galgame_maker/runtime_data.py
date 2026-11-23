@@ -116,6 +116,8 @@ def compile_game(
                 if item.get("character_id") not in characters:
                     raise CompileError(f"{location} references missing character")
                 used_characters.add(item["character_id"])
+                if item.get("voice_asset_id") is not None:
+                    require_asset(item["voice_asset_id"], "voice", location)
             if kind in {"dialogue", "narration"}:
                 if not isinstance(item.get("text"), str) or not item["text"]:
                     raise CompileError(f"{location} has empty text")

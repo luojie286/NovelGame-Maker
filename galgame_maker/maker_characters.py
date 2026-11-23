@@ -160,6 +160,9 @@ class CharacterPanel(QWidget):
         for relation in self.window.project.get("relationships", []):
             if relation["from_character_id"] == char_id or relation["to_character_id"] == char_id:
                 references.append(f"人物关系 {relation['label']}")
+        for asset in self.window.project["assets"]:
+            if asset.get("sprite_variant", {}).get("character_id") == char_id:
+                references.append(f"立绘变体 {asset['name']}")
         if references:
             QMessageBox.warning(self, "角色仍在使用", "\n".join(references))
             return

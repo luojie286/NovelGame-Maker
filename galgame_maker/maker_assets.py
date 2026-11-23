@@ -9,13 +9,13 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QSlider, QSplitter, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .project import import_asset, replace_asset, resolve_asset_path, verify_assets
+from .project import SPRITE_DIMENSIONS, import_asset, replace_asset, resolve_asset_path, verify_assets
 
 
 EXTENSION_KIND = {
@@ -29,9 +29,22 @@ KIND_LABELS = {
     "image": "图片",
     "bgm": "背景音乐",
     "sfx": "音效",
+    "voice": "角色语音",
     "video": "片尾视频",
     "text": "文本资料",
 }
+AUDIO_KINDS = {"bgm", "sfx", "voice"}
+
+
+def variant_description(asset: dict, project: dict) -> str:
+    variant = asset.get("sprite_variant")
+    if variant is None:
+        return ""
+    character = next(
+        (entry["name"] for entry in project["characters"] if entry["id"] == variant["character_id"]),
+        "",
+    )
+    return " · ".join(filter(None, [character, *(variant[key] for key in SPRITE_DIMENSIONS)]))
 
 
 def infer_image_tag(name: str) -> str:
@@ -55,6 +68,7 @@ def _make_badge_icon(kind: str) -> QIcon:
     colors = {
         "bgm": ("#2C224A", "#9F7AEA", "BGM"),
         "sfx": ("#1B3B3A", "#38B2AC", "SFX"),
+        "voice": ("#3E2537", "#EBA7D1", "VOICE"),
         "video": ("#3E2A1A", "#ED8936", "MP4"),
         "text": ("#1B2E46", "#63B3ED", "TXT"),
         "image": ("#232936", "#94A3B8", "IMG"),
@@ -114,6 +128,8 @@ class AssetPickerDialog(QDialog):
         allow_none_label: str | None = None,
         current_asset_id: str | None = None,
         parent=None,
+        *,
+        sprite_variants: bool = False,
     ):
         super().__init__(parent)
         self.project = project
@@ -153,6 +169,27 @@ class AssetPickerDialog(QDialog):
         self.search.textChanged.connect(self._reload)
         filters.addWidget(self.search, 1)
         layout.addLayout(filters)
+        self.variant_filters = {}
+        if sprite_variants:
+            row = QHBoxLayout()
+            variants = [asset["sprite_variant"] for asset in project["assets"] if "sprite_variant" in asset]
+            role = QComboBox()
+            role.addItem("全部角色", None)
+            used_ids = {variant["character_id"] for variant in variants}
+            for character in project["characters"]:
+                if character["id"] in used_ids:
+                    role.addItem(character["name"], character["id"])
+            self.variant_filters["character_id"] = role
+            for field, name in SPRITE_DIMENSIONS.items():
+                combo = QComboBox()
+                combo.addItem(f"全部{name}", None)
+                for value in sorted({variant[field] for variant in variants if variant[field]}):
+                    combo.addItem(value, value)
+                self.variant_filters[field] = combo
+            for combo in self.variant_filters.values():
+                row.addWidget(combo)
+                combo.currentIndexChanged.connect(self._reload)
+            layout.addLayout(row)
 
         body = QHBoxLayout()
         self.listing = QListWidget()
@@ -185,6 +222,10 @@ class AssetPickerDialog(QDialog):
             self.listing.addItem(none_row)
         needle = self.search.text().casefold().strip()
         selected_cat = self.category.currentText() if self.required_kind == "image" else "全部分类"
+        required_fields = {
+            key: combo.currentData() for key, combo in self.variant_filters.items()
+            if combo.currentData() is not None
+        }
         for asset in self.project["assets"]:
             if asset["kind"] != self.required_kind:
                 continue
@@ -193,10 +234,16 @@ class AssetPickerDialog(QDialog):
                 inferred = tags or [infer_image_tag(asset["name"])]
                 if selected_cat not in inferred:
                     continue
-            if needle and needle not in asset["name"].casefold():
+            variant = asset.get("sprite_variant", {})
+            if any(variant.get(key) != value for key, value in required_fields.items()):
+                continue
+            detail = variant_description(asset, self.project)
+            if needle and needle not in f"{asset['name']} {detail}".casefold():
                 continue
             tag_suffix = f" [{'/'.join(tags)}]" if tags else ""
             row = QListWidgetItem(f"{asset['name']}{tag_suffix}")
+            if detail:
+                row.setText(f"{row.text()} · {detail}")
             row.setData(Qt.ItemDataRole.UserRole, asset["id"])
             self.listing.addItem(row)
             if asset["id"] == target_id:
@@ -232,6 +279,8 @@ class AssetPickerDialog(QDialog):
             ))
 
     def accept(self):
+        if self.listing.currentItem() is None:
+            return
         self.selected_asset_id = self.current_choice()
         super().accept()
 
@@ -246,7 +295,9 @@ def asset_references(project: dict, asset_id: str) -> list[str]:
             references.append(f"资料 {document['title']}")
     for node in project["nodes"]:
         for item in node["items"]:
-            if item.get("asset_id") == asset_id:
+            if item.get("voice_asset_id") == asset_id:
+                references.append(f"节点 {node['name']} 对白语音")
+            elif item.get("asset_id") == asset_id:
                 references.append(f"节点 {node['name']} 演出")
         if (node.get("ending") or {}).get("credits_video_asset_id") == asset_id:
             references.append(f"节点 {node['name']} 片尾")
@@ -275,17 +326,18 @@ class AssetPanel(QWidget):
         outer = QVBoxLayout(self)
         controls = QHBoxLayout()
         self.kind = QComboBox()
-        self.kind.addItems(["全部", "image", "text", "bgm", "sfx", "video"])
+        self.kind.addItems(["全部", *KIND_LABELS])
         self.kind.currentTextChanged.connect(self._on_kind_combo_changed)
         controls.addWidget(self.kind)
         self.query = QLineEdit()
-        self.query.setPlaceholderText("搜索素材名称或分类标签...")
+        self.query.setPlaceholderText("搜索名称、标签或立绘变体...")
         self.query.textChanged.connect(self.refresh)
         controls.addWidget(self.query, 1)
         for caption, action in (
             ("批量导入", self.import_file),
             ("新建分类", self.add_folder),
             ("分类标签", self.edit_tags),
+            ("立绘变体", self.edit_variant),
             ("替换", self.replace_file),
             ("重命名", self.rename_asset),
             ("移除", self.remove_asset),
@@ -439,7 +491,7 @@ class AssetPanel(QWidget):
         root_all.setData(0, Qt.ItemDataRole.UserRole, ("全部", None))
         self.folder_tree.addTopLevelItem(root_all)
 
-        for kind in ("image", "bgm", "sfx", "video", "text"):
+        for kind in KIND_LABELS:
             kind_assets = [a for a in assets if a["kind"] == kind]
             kind_node = QTreeWidgetItem([f"📂 {KIND_LABELS[kind]} ({len(kind_assets)})"])
             kind_node.setData(0, Qt.ItemDataRole.UserRole, (kind, None))
@@ -506,7 +558,7 @@ class AssetPanel(QWidget):
             k, _ = current.data(0, Qt.ItemDataRole.UserRole)
             if k != "全部":
                 default_kind = k
-        kinds = ["image", "bgm", "sfx", "video", "text"]
+        kinds = list(KIND_LABELS)
         kind_labels = [f"{KIND_LABELS[k]} ({k})" for k in kinds]
         selected_label, accepted = QInputDialog.getItem(
             self, "新建分类文件夹", "所属类型", kind_labels, kinds.index(default_kind), editable=False,
@@ -533,6 +585,17 @@ class AssetPanel(QWidget):
             (asset for asset in self.window.project["assets"] if asset["id"] == asset_id), None
         )
 
+    def select_asset(self, asset_id: str, kind: str):
+        self._active_folder_tag = None
+        self.kind.setCurrentText(kind)
+        self.query.clear()
+        self.refresh()
+        for index in range(self.list.count()):
+            row = self.list.item(index)
+            if row.data(Qt.ItemDataRole.UserRole) == asset_id:
+                self.list.setCurrentItem(row)
+                break
+
     def refresh(self, *_args, rebuild_tree: bool = True):
         if rebuild_tree:
             self._rebuild_folder_tree()
@@ -547,6 +610,7 @@ class AssetPanel(QWidget):
                 if kind_filter != "全部" and asset["kind"] != kind_filter:
                     continue
                 tags = asset.get("tags", [])
+                detail = variant_description(asset, self.window.project)
                 if self._active_folder_tag is not None:
                     effective_tags = (
                         tags or [infer_image_tag(asset["name"])]
@@ -555,13 +619,13 @@ class AssetPanel(QWidget):
                     if self._active_folder_tag not in effective_tags:
                         continue
                 if needle:
-                    haystack = (asset["name"] + " " + " ".join(tags)).casefold()
+                    haystack = f"{asset['name']} {' '.join(tags)} {detail}".casefold()
                     if needle not in haystack:
                         continue
                 tag_suffix = f"\n[{'/'.join(tags)}]" if tags else ""
                 row = QListWidgetItem(self._asset_icon(asset), f"{asset['name']}{tag_suffix}")
                 row.setData(Qt.ItemDataRole.UserRole, asset["id"])
-                row.setToolTip(f"{asset['name']} · {KIND_LABELS.get(asset['kind'], asset['kind'])}")
+                row.setToolTip(" · ".join(filter(None, (asset["name"], KIND_LABELS[asset["kind"]], detail))))
                 self.list.addItem(row)
                 if asset["id"] == selected_id:
                     self.list.setCurrentItem(row)
@@ -583,7 +647,9 @@ class AssetPanel(QWidget):
             if suggested is None:
                 QMessageBox.warning(self, "格式", "首版支持 PNG、JPEG、TXT、MP3、WAV、MP4")
                 return
-            kinds = ["image", "text", "bgm", "sfx", "video"]
+            kinds = ["image", "text", "bgm", "sfx", "voice", "video"]
+            if suggested in AUDIO_KINDS and self.kind.currentText() == "voice":
+                suggested = "voice"
             selected, accepted = QInputDialog.getItem(
                 self, "素材用途", "类型", kinds, kinds.index(suggested), editable=False,
             )
@@ -638,6 +704,8 @@ class AssetPanel(QWidget):
             for filename in filenames:
                 source = Path(filename)
                 kind = EXTENSION_KIND.get(source.suffix.lower())
+                if kind in AUDIO_KINDS and self.kind.currentText() == "voice":
+                    kind = "voice"
                 if kind is None:
                     skipped.append(f"{source.name}（不支持的格式）")
                     continue
@@ -690,6 +758,47 @@ class AssetPanel(QWidget):
         self.window.mark_dirty()
         self.refresh()
 
+    def edit_variant(self):
+        asset = self.selected_asset()
+        if asset is None or asset["kind"] != "image":
+            return
+        characters = self.window.project["characters"]
+        if not characters:
+            QMessageBox.information(self, "立绘变体", "请先创建角色")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑立绘变体")
+        form = QFormLayout(dialog)
+        previous = asset.get("sprite_variant", {})
+        role = QComboBox()
+        role.addItem("无角色关联", None)
+        for character in characters:
+            role.addItem(character["name"], character["id"])
+        role.setCurrentIndex(max(0, role.findData(previous.get("character_id"))))
+        form.addRow("角色", role)
+        inputs = {}
+        for key, label in SPRITE_DIMENSIONS.items():
+            inputs[key] = QLineEdit(previous.get(key, ""))
+            form.addRow(label, inputs[key])
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if role.currentData() is None:
+            asset.pop("sprite_variant", None)
+        else:
+            asset["sprite_variant"] = {"character_id": role.currentData()}
+            asset["sprite_variant"].update({key: widget.text().strip() for key, widget in inputs.items()})
+            tags = asset.setdefault("tags", [])
+            if "立绘" not in tags:
+                tags.append("立绘")
+        self.window.mark_dirty()
+        self.refresh()
+
     def replace_file(self):
         asset = self.selected_asset()
         if asset is None:
@@ -702,7 +811,7 @@ class AssetPanel(QWidget):
         if suggested is None:
             QMessageBox.warning(self, "格式", "首版支持 PNG、JPEG、TXT、MP3、WAV、MP4")
             return
-        if suggested != asset["kind"]:
+        if suggested != asset["kind"] and not (asset["kind"] == "voice" and suggested in AUDIO_KINDS):
             QMessageBox.warning(
                 self, "类型不匹配",
                 f"当前素材类型为 {asset['kind']}，所选文件类型为 {suggested}",
@@ -751,6 +860,7 @@ class AssetPanel(QWidget):
             return
         self.stop_media()
         self.window.project["assets"].remove(asset)
+        self.window.project.get("editor", {}).get("generated_credits", {}).pop(asset["id"], None)
         self.window.mark_dirty()
         self.refresh()
         self.window.character_panel.refresh()
@@ -758,7 +868,7 @@ class AssetPanel(QWidget):
 
     def _on_item_double_clicked(self, item: QListWidgetItem):
         asset = self.selected_asset()
-        if asset and asset["kind"] in {"bgm", "sfx", "video"}:
+        if asset and asset["kind"] in AUDIO_KINDS | {"video"}:
             self.play()
 
     def _on_position_changed(self, pos: int):
@@ -776,6 +886,7 @@ class AssetPanel(QWidget):
 
     def stop_media(self):
         self.player.stop()
+        self.player.setSource(QUrl())
         self.seek_slider.setValue(0)
         self.time_label.setText("00:00 / 00:00")
 
@@ -812,15 +923,13 @@ class AssetPanel(QWidget):
                 self.text_preview.setPlainText(path.read_text(encoding="utf-8")[:4000])
             except OSError as error:
                 self.text_preview.setPlainText(str(error))
-        elif asset["kind"] in {"bgm", "sfx"}:
+        elif asset["kind"] in AUDIO_KINDS:
             self.image.setPixmap(self._badge_icon(asset["kind"]).pixmap(128, 96))
             self.media_controls.show()
-            self.player.setSource(QUrl.fromLocalFile(str(path)))
         elif asset["kind"] == "video":
             self.image.hide()
             self.video.show()
             self.media_controls.show()
-            self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.details.setText(
             f"名称：{asset['name']}\n"
             f"类型：{KIND_LABELS.get(asset['kind'], asset['kind'])}\n"
@@ -831,7 +940,7 @@ class AssetPanel(QWidget):
 
     def play(self):
         asset = self.selected_asset()
-        if asset is None or asset["kind"] not in {"bgm", "sfx", "video"}:
+        if asset is None or asset["kind"] not in AUDIO_KINDS | {"video"}:
             return
         path = resolve_asset_path(self.window.root, asset["path"])
         url = QUrl.fromLocalFile(str(path))

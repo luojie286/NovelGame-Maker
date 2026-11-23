@@ -359,6 +359,7 @@ class MakerWindow(QMainWindow):
             ("实时画面预览窗口", self.open_live_preview),
             ("运行预览", self.preview),
             ("调试预览", self.preview_debug),
+            ("生成片尾报幕", self.generate_credits),
             ("导出游戏", self.export),
         ):
             action = QAction(label, self)
@@ -443,6 +444,15 @@ class MakerWindow(QMainWindow):
             button.clicked.connect(handler)
             item_actions.addWidget(button)
         items_layout.addLayout(item_actions)
+        media_actions = QHBoxLayout()
+        for label, handler in (
+            ("关联对白语音", self.set_dialogue_voice),
+            ("切换立绘", self.switch_sprite),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            media_actions.addWidget(button)
+        items_layout.addLayout(media_actions)
         self.inspector_tabs.addTab(items_tab, "播放顺序")
 
         # Tab 2: Node properties — choices (local choice variable) + node-local variables + globals
@@ -812,7 +822,9 @@ class MakerWindow(QMainWindow):
         chars = {c["id"]: c["name"] for c in self.project["characters"]} if self.project else {}
         if kind == "dialogue":
             speaker = chars.get(item.get("character_id"), "未知角色")
-            return f"{prefix} · {speaker}：{item['text'][:36]}"
+            voice_id = item.get("voice_asset_id")
+            voice = f" [语音：{assets.get(voice_id, '缺失素材')}]" if voice_id else ""
+            return f"{prefix} · {speaker}：{item['text'][:36]}{voice}"
         if kind == "narration":
             return f"{prefix} · {item['text'][:42]}"
         if kind == "set_background":
@@ -1538,6 +1550,8 @@ class MakerWindow(QMainWindow):
         default_tag: str | None = None,
         allow_none_label: str | None = None,
         current_asset_id: str | None = None,
+        *,
+        sprite_variants: bool = False,
     ) -> tuple[str | None, bool]:
         has_any = any(asset["kind"] == required_kind for asset in self.project["assets"])
         if not has_any and allow_none_label is None:
@@ -1549,10 +1563,56 @@ class MakerWindow(QMainWindow):
             allow_none_label=allow_none_label,
             current_asset_id=current_asset_id,
             parent=self,
+            sprite_variants=sprite_variants,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None, False
         return dialog.selected_asset_id, True
+
+    def generate_credits(self):
+        if not self.require_project():
+            return
+        from .maker_credits import CreditsDialog
+
+        dialog = CreditsDialog(self, self.root, self.project)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.mark_dirty()
+        self.tabs.setCurrentWidget(self.asset_panel)
+        self.asset_panel.select_asset(dialog.asset_id, "video")
+
+    def configure_item_asset(self, item_type, field, kind, title, **picker_options):
+        node = self.current_node()
+        row = self.items_list.currentRow()
+        if node is None or row < 0:
+            return
+        item = node["items"][row]
+        if item["type"] != item_type:
+            QMessageBox.information(self, title, f"请先选中「{ITEM_TYPE_LABELS[item_type]}」条目")
+            return
+        asset_id, accepted = self._pick_asset(
+            kind, title, current_asset_id=item.get(field), **picker_options,
+        )
+        if not accepted:
+            return
+        if asset_id is None:
+            item.pop(field, None)
+        else:
+            item[field] = asset_id
+        self.mark_dirty()
+        self.items_list.item(row).setText(self._format_item_label(item))
+        self.update_live_preview()
+
+    def set_dialogue_voice(self):
+        self.configure_item_asset(
+            "dialogue", "voice_asset_id", "voice", "关联对白语音",
+            allow_none_label="无语音",
+        )
+
+    def switch_sprite(self):
+        self.configure_item_asset(
+            "show_sprite", "asset_id", "image", "切换立绘", sprite_variants=True,
+        )
 
     def add_item(self):
         node = self.current_node()
@@ -1596,6 +1656,7 @@ class MakerWindow(QMainWindow):
             asset_id, accepted = self._pick_asset(
                 required_kind, f"选择{ITEM_TYPE_LABELS[kind]}素材",
                 default_tag=default_tag, allow_none_label=allow_none,
+                sprite_variants=kind == "show_sprite",
             )
             if not accepted:
                 return
@@ -1680,6 +1741,7 @@ class MakerWindow(QMainWindow):
                 asset_kind, f"更换{ITEM_TYPE_LABELS[kind]}素材",
                 default_tag=default_tag, allow_none_label=allow_none,
                 current_asset_id=item.get("asset_id"),
+                sprite_variants=kind == "show_sprite",
             )
             if not accepted:
                 return
@@ -1768,7 +1830,7 @@ class MakerWindow(QMainWindow):
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "无法预览", str(error))
             return
-        self.preview_window = PlayerWindow(game, self.root)
+        self.preview_window = PlayerWindow(game, self.root, autosave=False)
         self.preview_window.show()
 
     def preview_debug(self):
@@ -1824,6 +1886,7 @@ class MakerWindow(QMainWindow):
             start_node_id=start_id,
             initial_variables=test_vars,
             auto_start=True,
+            autosave=False,
         )
         self.preview_window.show()
 
@@ -1855,6 +1918,7 @@ class MakerWindow(QMainWindow):
     def closeEvent(self, event):
         if self._change_project():
             self._stop_branch_worker()
+            self.asset_panel.stop_media()
             self.live_preview_window.close()
             event.accept()
         else:

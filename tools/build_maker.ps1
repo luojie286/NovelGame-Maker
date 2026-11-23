@@ -1,8 +1,18 @@
 param(
-    [string]$Python = ".venv\Scripts\python.exe"
+    [string]$Python = ".venv\Scripts\python.exe",
+    [string]$FFmpegDirectory
 )
 
 $ErrorActionPreference = "Stop"
+$ffmpegBundle = @()
+if ($FFmpegDirectory) {
+    $ffmpegRoot = (Resolve-Path -LiteralPath $FFmpegDirectory).Path
+    if (-not ((Test-Path -LiteralPath (Join-Path $ffmpegRoot "ffmpeg.exe") -PathType Leaf) -or
+              (Test-Path -LiteralPath (Join-Path $ffmpegRoot "bin/ffmpeg.exe") -PathType Leaf))) {
+        throw "FFmpegDirectory must contain ffmpeg.exe or bin/ffmpeg.exe."
+    }
+    $ffmpegBundle = @("--add-data", "${ffmpegRoot}:ffmpeg")
+}
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $originalPath = $env:Path
 $originalCache = $env:PYINSTALLER_CONFIG_DIR
@@ -19,9 +29,10 @@ try {
         "--name", "GalGameMaker", "--specpath", $buildRoot,
         "--workpath", $buildRoot, "--distpath", (Join-Path $root "dist"),
         "--collect-binaries", "z3",
-        "--add-data", "${playerBundle}:player_bundle",
-        "maker_main.py"
+        "--add-data", "${playerBundle}:player_bundle"
     )
+    $arguments += $ffmpegBundle
+    $arguments += "maker_main.py"
     & $pythonExe @arguments
     if ($LASTEXITCODE) { throw "Maker build failed ($LASTEXITCODE)." }
 }

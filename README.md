@@ -50,4 +50,10 @@ py -3.13 -m venv .venv
 pwsh -File tools/build_maker.ps1
 ```
 
+制作器素材页可为图片设置角色、神态、服装和动作。在剧情的「播放顺序」里选中显示立绘条目即可切换变体，选中对白即可关联 MP3 或 WAV 角色语音。播放器进入对白时播一次语音，离开第一页时停止。
+
+从制作器的「项目 → 生成片尾报幕」输入制作人名单，选择片尾曲和滚动风格。成片会导入素材库，可在结局节点选择并随游戏导出。生成需要提供带 `libx264` 和 AAC 编码器的 FFmpeg。开发时可通过 PATH 使用，打包时可用 `pwsh -File tools/build_maker.ps1 -FFmpegDirectory <FFmpeg目录>` 随制作器打包，也可将 `ffmpeg.exe` 放在制作器旁。播放器直接播放成片。
+
+导出游戏另设一个自动存档位，在开场、切换到可存档的节点、进入选项或停留阶段时写入。可从标题页读取自动存档。回看包含已显示的对白和已选项，自动与快进均在需要玩家选择时停下。
+
 制作器目录包位于 `dist/GalGameMaker/`，其中预置独立播放器。制作器导出的游戏目录包含 `GalGamePlayer.exe`、`game.json` 和用到的 `assets/`。合成示例资源可用 `.\.venv\Scripts\python.exe -m tools.create_example` 生成，该命令要求目标示例目录尚不存在，并需要构建机上的 FFmpeg。
